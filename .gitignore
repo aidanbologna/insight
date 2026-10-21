@@ -28,3 +28,8 @@ desktop.ini
 venv/
 env/
 .venv/
+
+# ── Demo capture helpers ─────────────────────────────────────────────────────
+demo.gif
+demo_frame*.png
+insightByMilton-v*-windows.zip
