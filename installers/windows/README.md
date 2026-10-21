@@ -42,8 +42,23 @@ Keep `insightByMilton.exe` and `_internal\` in the same folder — the app needs
 
 ---
 
+## Windows SmartScreen warning
+
+When you first run the exe, Windows may show a blue SmartScreen dialog saying
+*"Windows protected your PC"*. This happens because the app isn't code-signed yet.
+
+**To bypass it:**
+1. Click **"More info"** (below the warning text)
+2. Click **"Run anyway"**
+
+This is a one-time step per machine. The app is safe — SmartScreen blocks all unsigned
+executables, including clean PyInstaller builds, until they accumulate enough "reputation."
+
+---
+
 ## Notes
 
 - The app stores its data (watchlist, portfolio, settings, alerts) in `%APPDATA%\InsightByMilton`
+  — this is your personal data folder; it is **not** bundled in the exe and is never shared
 - Windows notifications (`win11toast`) require Windows 10 Build 1903 or later
 - Drag-and-drop CSV import requires `tkinterdnd2` (included in the pre-built installer)
