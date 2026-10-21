@@ -1,0 +1,30 @@
+# ── PyInstaller output ──────────────────────────────────────────────────────
+dist/
+build/
+*.spec
+insightByMilton/
+
+# ── Compiled Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# ── Local version archives ───────────────────────────────────────────────────
+# (kept on disk as reference; git history holds each version as a commit)
+Versions/
+
+# ── OS / editor noise ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Environment / secrets ────────────────────────────────────────────────────
+.env
+venv/
+env/
+.venv/
