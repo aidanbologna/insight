@@ -28,7 +28,7 @@ import tkinter.font as tkfont
 from tkinter import ttk, filedialog
 
 import numpy as np
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -371,6 +371,17 @@ NEWS_TOPICS = {
 }
 TOPIC_PATTERNS = {name: re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b", re.I)
                   for name, words in NEWS_TOPICS.items() if words}
+
+# Words that mark a headline as finance / business news (used for a stock's related articles)
+FINANCE_PATTERN = re.compile(
+    r"\b(stocks?|shares?|shareholders?|investors?|investing|investments?|markets?|wall street|nasdaq|"
+    r"s&p|dow|earnings|revenues?|sales|profits?|losses|quarter|quarterly|guidance|forecasts?|outlook|"
+    r"analysts?|price targets?|upgrades?|downgrades?|valuations?|market cap|dividends?|buybacks?|ipo|"
+    r"mergers?|acquisitions?|acquires?|acquired|takeover|deal|stake|funds?|trading|traders?|rall(y|ies|ied)|"
+    r"sell-?off|plunges?|plunged|surges?|surged|soars?|soared|tumbles?|tumbled|slumps?|slumped|bonds?|"
+    r"debt|loans?|banks?|billion|trillion|tariffs?|inflation|economy|economic|fed|interest rates?|"
+    r"layoffs?|job cuts|costs?|pricing|prices|cash|capital|financ\w*|sec|antitrust|settlement|"
+    r"subscribers|demand|orders|shipments|deliveries|raises?|raised|funding|valued|bitcoin|crypto)\b", re.I)
 
 # Markets overview
 INDEXES = [("S&P 500", "^GSPC"), ("Dow Jones", "^DJI"), ("Nasdaq", "^IXIC"), ("Russell 2000", "^RUT")]
@@ -1171,6 +1182,68 @@ def open_link(url):
         webbrowser.open(url)
 
 
+_LOGO = None
+
+
+def _caption_font(size):
+    for name in ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def add_watermark(img, caption=""):
+    """Add a footer strip: caption on the left, the Insight by Milton logo in the bottom-right corner."""
+    global _LOGO
+    if _LOGO is None:
+        _LOGO = Image.open(resource_path("assets", "logo.png")).convert("RGBA")
+    img = img.convert("RGB")
+    w, h = img.size
+    logo_h = max(40, int(w * 0.04))
+    logo = _LOGO.resize((int(_LOGO.width * logo_h / _LOGO.height), logo_h), Image.LANCZOS)
+    margin = int(logo_h * 0.35)
+    band = logo_h + margin
+    out = Image.new("RGB", (w, h + band), BG)
+    out.paste(img, (0, 0))
+    draw = ImageDraw.Draw(out)
+    draw.line([(margin, h), (w - margin, h)], fill=BORDER, width=max(1, logo_h // 40))
+    out.paste(logo, (w - logo.width - margin // 2, h + margin // 2), logo)
+    if caption:
+        draw.text((margin, h + band / 2), caption, fill=MUTED, font=_caption_font(int(logo_h * 0.3)), anchor="lm")
+    return out
+
+
+def figure_image(fig):
+    """Render a matplotlib figure at high resolution (hover crosshairs are left out)."""
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=200, facecolor=BG)
+    buffer.seek(0)
+    return Image.open(buffer)
+
+
+def save_screenshot(app, image, name, caption=""):
+    """Watermark an image and let the user choose where to save it."""
+    pictures = os.path.join(os.path.expanduser("~"), "Pictures")
+    filename = re.sub(r'[\\/:*?"<>|]', "", name).strip() + ".png"
+    path = filedialog.asksaveasfilename(
+        title="Save chart screenshot", defaultextension=".png", initialfile=filename,
+        initialdir=pictures if os.path.isdir(pictures) else None,
+        filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg")])
+    if not path:
+        return
+    try:
+        add_watermark(image, caption).save(path, quality=95)
+        app.set_status(f"Screenshot saved: {os.path.basename(path)}")
+    except Exception as exc:
+        app.set_status(f"Couldn't save the screenshot: {exc}")
+
+
+def chart_caption(*parts):
+    return "  ·  ".join([p for p in parts if p] + [short_date(datetime.now())])
+
+
 class RoundButton(tk.Canvas):
     """Pill-shaped button like the 'Subscribe' button on the website."""
     STYLES = {  # fill, text, hover fill, outline
@@ -1226,6 +1299,40 @@ class RoundButton(tk.Canvas):
         w, h = self._size()
         self.configure(width=w, height=h)
         self._draw()
+
+
+class CameraButton(tk.Canvas):
+    """Round camera-icon button that saves a watermarked screenshot of a chart."""
+
+    def __init__(self, parent, command, tip="Save a screenshot of this chart"):
+        size = S(32)
+        super().__init__(parent, width=size, height=size, bg=parent.cget("bg"), highlightthickness=0,
+                         bd=0, cursor="hand2")
+        self.keep_bg = True
+        self.command, self.hover = command, False
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<ButtonRelease-1>", lambda e: self.command())
+        self._draw()
+        Tooltip(self, tip)
+
+    def _set_hover(self, value):
+        self.hover = value
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        s = int(self["width"])
+        ring = SAND if self.hover else self["bg"]
+        self.create_oval(1, 1, s - 2, s - 2, fill=ring, outline=FAINT if self.hover else BORDER)
+        c, bw, bh = s / 2, s * 0.48, s * 0.32
+        x0, y0, x1, y1 = c - bw / 2, c - bh / 2 + s * 0.05, c + bw / 2, c + bh / 2 + s * 0.05
+        self.create_rectangle(c - bw * 0.2, y0 - s * 0.08, c + bw * 0.2, y0 + 1, fill=INK, outline=INK)
+        round_rect(self, x0, y0, x1, y1, s * 0.07, fill=INK, outline=INK)
+        cy, r = (y0 + y1) / 2, bh * 0.34
+        self.create_oval(c - r, cy - r, c + r, cy + r, fill=ring, outline=ring)
+        r *= 0.5
+        self.create_oval(c - r, cy - r, c + r, cy + r, fill=INK, outline=INK)
 
 
 class ChipGroup(tk.Frame):
@@ -1330,6 +1437,7 @@ class ScrollFrame(tk.Frame):
 
     def to_top(self):
         self.canvas.yview_moveto(0)
+
 
 
 class Sparkline(tk.Canvas):
@@ -2028,8 +2136,7 @@ class MarketsPage(Page):
         controls.pack(fill="x", pady=(S(18), S(6)))
         self.range_chips = ChipGroup(controls, list(RANGES), self.set_range, value=self.range_key)
         self.range_chips.pack(side="left")
-        RoundButton(controls, "Save chart", self.save_chart, kind="ghost", font="chip",
-                    padx=12, pady=5, radius=12).pack(side="right")
+        CameraButton(controls, self.save_chart).pack(side="right")
         ChipGroup(controls, ["50-day MA", "200-day MA", "Volume"], self.set_overlays,
                   value=self.overlays, multi=True).pack(side="right", padx=S(12))
         self.period_label = label(main, "", "small_semi", fg=MUTED)
@@ -2045,7 +2152,7 @@ class MarketsPage(Page):
         self.canvas.mpl_connect("figure_leave_event", lambda e: self._hide_hover())
 
         self.fund_section = tk.Frame(main, bg=BG)   # only packed for companies, see _fill_fundamentals
-        self.headlines_title = label(main, "Headlines", "h2")
+        self.headlines_title = label(main, "Related Financial News", "h2")
         self.headlines_title.pack(anchor="w", pady=(S(28), S(10)))
         self.news_box = tk.Frame(main, bg=BG)
         self.news_box.pack(fill="x")
@@ -2097,6 +2204,7 @@ class MarketsPage(Page):
         row = tk.Frame(parent, bg=BG)
         row.pack(fill="x", pady=(S(26), S(4)))
         label(row, "Major Indices", "h2").pack(side="left")
+        CameraButton(row, self._screenshot_indices).pack(side="right", padx=(S(10), 0))
         ChipGroup(row, list(OVERVIEW_RANGES), self._set_overview_range,
                   value=self.overview_range).pack(side="right")
         self.overview_note = label(parent, "Percent change over the period — compare how each index has moved.",
@@ -2118,7 +2226,10 @@ class MarketsPage(Page):
         sec.grid(row=0, column=0, sticky="nsew", padx=(0, S(10)))
         sbox = tk.Frame(sec, bg=SURFACE)
         sbox.pack(fill="both", expand=True, padx=S(22), pady=S(18))
-        label(sbox, "Sector Performance", "h2").pack(anchor="w")
+        sec_head = tk.Frame(sbox, bg=SURFACE)
+        sec_head.pack(fill="x")
+        label(sec_head, "Sector Performance", "h2").pack(side="left")
+        CameraButton(sec_head, self._screenshot_sectors).pack(side="right")
         label(sbox, "S&P 500 sectors, today · click to open the sector ETF", "small", fg=MUTED).pack(anchor="w")
         self.sector_rows = {}
         rows = tk.Frame(sbox, bg=SURFACE)
@@ -2205,6 +2316,35 @@ class MarketsPage(Page):
                 w.destroy()
             change_pill(pill_box, q["pct"], width=8).pack()
             spark.set(q["spark"], trend_color(q["change"]))
+
+    def _screenshot_indices(self):
+        caption = chart_caption("Major U.S. stock indices", f"% change, {self.overview_range}")
+        save_screenshot(self.app, figure_image(self.index_fig), f"Major indices {self.overview_range}", caption)
+
+    def _screenshot_sectors(self):
+        """The sector bars are Tk widgets, so draw the same chart with matplotlib for the image."""
+        if not self.sector_values:
+            return
+        names = [n for n, sym in SECTORS if sym in self.sector_values][::-1]
+        values = [self.sector_values[sym] for _, sym in SECTORS if sym in self.sector_values][::-1]
+        fig = Figure(figsize=(8, 4.6), facecolor=BG)
+        ax = fig.add_subplot(111)
+        style_axes(ax)
+        ax.grid(True, axis="x", color=BORDER, linewidth=0.8)
+        ax.grid(False, axis="y")
+        ax.barh(names, values, color=[UP if v >= 0 else DOWN for v in values], height=0.6)
+        ax.axvline(0, color=FAINT, linewidth=0.9)
+        span = max(abs(v) for v in values) or 1
+        for y, v in enumerate(values):
+            ax.text(v + (span * 0.03 if v >= 0 else -span * 0.03), y, fmt_pct(v), va="center",
+                    ha="left" if v >= 0 else "right", fontsize=8.5, color=trend_color(v))
+        ax.set_xlim(-span * 1.3, span * 1.3)
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:+.1f}%"))
+        ax.tick_params(axis="y", labelsize=9, colors=INK)
+        ax.set_title("S&P 500 Sector Performance — Today", loc="left", fontsize=12, color=INK, pad=12)
+        fig.subplots_adjust(left=0.27, right=0.97, top=0.9, bottom=0.08)
+        save_screenshot(self.app, figure_image(fig), "Sector performance",
+                        chart_caption("S&P 500 sectors (SPDR sector ETFs)"))
 
     def _set_overview_range(self, range_key):
         self.overview_range = range_key
@@ -2319,15 +2459,13 @@ class MarketsPage(Page):
                                         "ghost" if on else "primary")
 
     def save_chart(self):
-        if not self.data:
+        if not self.data or not self.hover_artists:
             return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".png", filetypes=[("PNG image", "*.png"), ("PDF", "*.pdf")],
-            initialfile=f"{self.data['symbol']}_{self.range_key}.png")
-        if path:
-            self._hide_hover()
-            self.fig.savefig(path, dpi=200, facecolor=BG)
-            self.app.set_status(f"Chart saved to {path}")
+        self._hide_hover()
+        sym = self.data["symbol"]
+        name = self.data["info"].get("shortName") or sym
+        caption = chart_caption(f"{name} ({sym})", self.price_label.cget("text"), self.period_label.cget("text"))
+        save_screenshot(self.app, figure_image(self.fig), f"{sym} {self.range_key} chart", caption)
 
     # --- results ----------------------------------------------------------------
     def _show(self, rid, data):
@@ -2486,10 +2624,12 @@ class MarketsPage(Page):
                 return
             for w in self.news_box.winfo_children():
                 w.destroy()
-            found = [a for a in newest_first(news) if matches(a["title"] + " " + a["summary"])][:6]
+            found = [a for a in newest_first(news)
+                     if matches(a["title"] + " " + a["summary"])
+                     and FINANCE_PATTERN.search(a["title"] + " " + a["summary"])][:6]
             if not found:
-                label(self.news_box, f"None of the {len(NEWS_SOURCES)} followed outlets mention "
-                                     f"{name or symbol} in their latest headlines.", "body",
+                label(self.news_box, f"None of the {len(NEWS_SOURCES)} followed outlets have finance stories "
+                                     f"about {name or symbol} in their latest headlines.", "body",
                       fg=FAINT).pack(anchor="w")
             for art in found:
                 HeadlineRow(self.news_box, self.app, art).pack(fill="x")
@@ -3110,7 +3250,10 @@ class BondPage(Page):
         row.columnconfigure(1, minsize=S(330))
         left = tk.Frame(row, bg=BG)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, S(28)))
-        label(left, "The Yield Curve", "h2").pack(anchor="w")
+        curve_head = tk.Frame(left, bg=BG)
+        curve_head.pack(fill="x")
+        label(curve_head, "The Yield Curve", "h2").pack(side="left")
+        CameraButton(curve_head, self._screenshot_curve).pack(side="right")
         label(left, "Today compared with one month and one year ago", "small", fg=MUTED).pack(anchor="w")
         self.curve_fig = Figure(figsize=(8, 3.8), dpi=96 * SCALE, facecolor=BG)
         self.curve_canvas = FigureCanvasTkAgg(self.curve_fig, master=left)
@@ -3127,7 +3270,10 @@ class BondPage(Page):
         self.table.pack(fill="x")
 
         # spread history
-        label(wrap, "Recession Watch", "h2").pack(anchor="w", pady=(S(36), 0))
+        spread_head = tk.Frame(wrap, bg=BG)
+        spread_head.pack(fill="x", pady=(S(36), 0))
+        label(spread_head, "Recession Watch", "h2").pack(side="left")
+        CameraButton(spread_head, self._screenshot_spreads).pack(side="right")
         label(wrap, "Spread between long and short Treasury yields over the past two years. "
                     "Below zero means the curve is inverted.", "small", fg=MUTED).pack(anchor="w")
         self.spread_fig = Figure(figsize=(10, 3), dpi=96 * SCALE, facecolor=BG)
@@ -3152,6 +3298,14 @@ class BondPage(Page):
                    "Inversions of the 2-year/10-year and 3-month/10-year spreads have preceded most U.S. "
                    "recessions since the 1970s, though the lag has ranged from months to years, and a "
                    "signal is not a guarantee.", "body", fg=MUTED).pack(fill="x")
+
+    def _screenshot_curve(self):
+        caption = "U.S. Treasury par yield curve  ·  " + self.asof.cget("text").split("  ·  ")[0]
+        save_screenshot(self.app, figure_image(self.curve_fig), "Treasury yield curve", caption)
+
+    def _screenshot_spreads(self):
+        caption = chart_caption("Treasury spreads: 10Y – 2Y and 10Y – 3M", "Source: U.S. Treasury")
+        save_screenshot(self.app, figure_image(self.spread_fig), "Treasury spread history", caption)
 
     def first_load(self):
         self.refresh()

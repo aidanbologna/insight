@@ -1,9 +1,18 @@
-# Insight by Milton — v4 (News Sources & Speed)
+# Insight by Milton — v5 (Chart Screenshots)
 
 A desktop markets companion for **The Milton Review**, styled after
 [themiltonreview.net](https://www.themiltonreview.net).
 
-## What's new in v4
+## What's new in v5
+
+- **Chart screenshots** — every chart has a round camera button. It saves a high-resolution PNG or
+  JPEG with a caption on the left and the Insight by Milton logo in the bottom-right corner.
+  Charts covered: the stock chart, Major Indices, Sector Performance, the Treasury yield curve and
+  Recession Watch.
+- **Finance-only related news** — a stock's "Related Financial News" now only shows stories about
+  markets, earnings, deals, analysts, the economy and similar topics.
+
+## What was new in v4
 
 - **Faster** — the window opens ~1.5 s sooner (heavy libraries load in the background), chart hovering
   is ~4× faster (only the crosshair is redrawn), thumbnails are shrunk off the UI thread, and news
