@@ -1,9 +1,22 @@
-# Insight by Milton — v7 (Portfolio, Calendar & Dark Mode)
+# Insight by Milton — v8 (Portfolio CSV Import)
 
 A desktop markets companion for **The Milton Review**, styled after
 [themiltonreview.net](https://www.themiltonreview.net).
 
-## What's new in v7
+## What's new in v8
+
+- **Import CSV** on the Portfolio tab — works with broker position exports (Fidelity, Schwab,
+  Vanguard, Robinhood, E*TRADE and others) and simple spreadsheets (`Symbol,Shares,Average Cost`).
+  Finds the table even below account info, recognises each broker's column names, converts total
+  cost basis to cost per share, combines the same stock across accounts, and skips cash, totals and
+  options. A preview lets you choose **Add & update** or **Replace all**.
+- **Drag & drop** a CSV anywhere on the window to import it.
+- **Export CSV** — saves symbol, shares, average cost, price, value, today's change, gain and weight
+  (the file can be imported again).
+- Holdings without a cost basis are allowed: value and dividends still work, gains appear once you
+  add the cost.
+
+## What was new in v7
 
 - **Portfolio** tab — enter shares and average cost; see total value, today's change, total gain,
   an allocation donut (by holding or sector), performance vs the S&P 500 and estimated dividend income.

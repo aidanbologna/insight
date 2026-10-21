@@ -6,6 +6,7 @@
 #  Data:   Yahoo Finance (yfinance), U.S. Treasury, The Milton Review RSS feed
 # =============================================================================
 
+import csv
 import html
 import importlib
 import io
@@ -127,7 +128,7 @@ def set_dark_titlebar(window, dark):
         pass
 
 
-VERSION = "7.0"
+VERSION = "8.0"
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
 BLOG_URL = SITE_URL + "/blog"
@@ -547,6 +548,7 @@ def _bundle_hint():
     # never called — these plain imports just tell PyInstaller to include the libraries
     import pandas  # noqa: F401
     import yfinance  # noqa: F401
+    import tkinterdnd2  # noqa: F401
 
 
 pd = LazyModule("pandas")
@@ -609,6 +611,12 @@ def fmt_big(v):
 
 def fmt_pct(v):
     return "—" if is_missing(v) else f"{v:+.2f}%"
+
+
+def tidy_name(name):
+    """Yahoo writes some names like "Coca-Cola Company (The)"."""
+    name = (name or "").strip()
+    return "The " + name[:-6] if name.endswith(" (The)") else name
 
 
 def fmt_money(v, signed=False, decimals=2):
@@ -1238,9 +1246,7 @@ def fetch_retail_sales():
 def fetch_company_events(symbol):
     cal = _cached(("calendar", symbol), 6 * 3600, lambda: dict(yf.Ticker(symbol).calendar or {})) or {}
     info = fetch_info(symbol)
-    name = info.get("shortName") or symbol
-    if name.endswith(" (The)"):          # Yahoo writes "Coca-Cola Company (The)"
-        name = "The " + name[:-6]
+    name = tidy_name(info.get("shortName")) or symbol
 
     def as_datetime(d):
         return datetime(d.year, d.month, d.day) if d else None
@@ -1300,6 +1306,128 @@ def _safe(fn, *args):
         return fn(*args)
     except Exception:
         return []
+
+
+# --- portfolio CSV import --------------------------------------------------------------
+# Column names seen in broker exports (Fidelity, Schwab, Vanguard, Robinhood, E*TRADE…) and in
+# home-made spreadsheets, with spaces and punctuation removed.
+CSV_COLUMNS = {
+    "symbol": {"symbol", "ticker", "tickersymbol", "symbolcusip", "securitysymbol", "stocksymbol", "instrument",
+               "code"},
+    "shares": {"quantity", "shares", "qty", "qtyquantity", "sharesquantity", "quantityshares", "units",
+               "sharesheld", "numberofshares", "position", "currentquantity", "shareqty", "sharesowned"},
+    "cost_each": {"averagecost", "avgcost", "averagecostbasis", "costpershare", "averageprice", "avgprice",
+                  "purchaseprice", "pricepaid", "costbasispershare", "averagecostpershare", "unitcost", "buyprice",
+                  "averagepurchaseprice", "avgcostpershare", "avgcostshare", "averagecostshare", "costshare", "cost",
+                  "averagecostprice", "avgpurchaseprice"},
+    "cost_total": {"costbasis", "costbasistotal", "totalcost", "totalcostbasis", "costbasiscb", "bookvalue",
+                   "costbasisamount", "totalcostbasisamount"},
+    "name": {"description", "name", "securityname", "companyname", "security", "securitydescription",
+             "investmentname"},
+}
+CSV_LABELS = {"symbol": "symbol", "shares": "shares", "cost_each": "average cost per share",
+              "cost_total": "total cost (divided by shares)", "name": "name"}
+NOT_HOLDINGS = re.compile(r"\b(cash|total|pending|money market|sweep|margin|core position)\b", re.I)
+
+
+def _csv_key(header):
+    return re.sub(r"[^a-z]", "", (header or "").lower())
+
+
+def _csv_number(text, decimal_comma=False):
+    t = (text or "").strip().replace("$", "").replace("%", "").replace("+", "")
+    if decimal_comma and "." not in t:
+        t = t.replace(",", ".")       # European style: 2,5 means 2.5
+    t = t.replace(",", "")
+    negative = t.startswith("(") and t.endswith(")")
+    t = t.strip("()").strip()
+    if t.lower() in ("", "-", "--", "n/a", "na", "none"):
+        return None
+    try:
+        value = float(t)
+    except ValueError:
+        return None
+    return -value if negative else value
+
+
+def _csv_symbol(raw):
+    sym = (raw or "").strip().upper().rstrip("*").strip()
+    if re.fullmatch(r"[A-Z]{1,5}[./][A-Z]", sym):     # BRK.B / BRK/B -> BRK-B, as Yahoo writes it
+        sym = re.sub(r"[./]", "-", sym)
+    return sym
+
+
+def parse_portfolio_csv(path):
+    """Read holdings from a broker export or a simple spreadsheet. Returns the holdings found, the rows
+    that were skipped (and why), and which columns were used."""
+    raw = open(path, "rb").read()
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    lines = list(csv.reader(text.splitlines(), dialect))
+    decimal_comma = dialect.delimiter == ";"
+
+    columns, header_at = None, None
+    for i, row in enumerate(lines[:60]):          # broker files often start with a few lines of account info
+        found = {}
+        for c, cell in enumerate(row):
+            key = _csv_key(cell)
+            for field, names in CSV_COLUMNS.items():
+                if key in names and field not in found:
+                    found[field] = c
+        if "symbol" in found and "shares" in found:
+            columns, header_at = found, i
+            break
+    if columns is None:
+        raise ValueError("Couldn't find the holdings table. The file needs a column for the symbol (e.g. "
+                         "“Symbol” or “Ticker”) and one for the number of shares (e.g. “Shares” or “Quantity”).")
+
+    def cell(row, field):
+        c = columns.get(field)
+        return row[c].strip() if c is not None and c < len(row) else ""
+
+    holdings, skipped = {}, []
+    for n, row in enumerate(lines[header_at + 1:], start=header_at + 2):
+        if sum(1 for x in row if x.strip()) <= 1:     # blank lines and footnotes/disclaimers
+            continue
+        raw_symbol, name = cell(row, "symbol"), cell(row, "name")
+        sym = _csv_symbol(raw_symbol)
+        if not sym:
+            skipped.append((n, raw_symbol or (row[0] if row else ""), "no symbol"))
+            continue
+        if raw_symbol.endswith("**") or NOT_HOLDINGS.search(raw_symbol) or NOT_HOLDINGS.search(name):
+            skipped.append((n, raw_symbol, "cash, money market or a total line"))
+            continue
+        if " " in sym or not TICKER_RE.match(sym) or len(sym) > 10:
+            skipped.append((n, raw_symbol, "not a stock or fund symbol (e.g. an option)"))
+            continue
+        shares = _csv_number(cell(row, "shares"), decimal_comma)
+        if not shares or shares <= 0:
+            skipped.append((n, raw_symbol, "no share quantity"))
+            continue
+        cost = _csv_number(cell(row, "cost_each"), decimal_comma)
+        if not cost and "cost_total" in columns:
+            total = _csv_number(cell(row, "cost_total"), decimal_comma)
+            cost = total / shares if total else None
+        cost = cost or None       # a cost of 0 almost always means "not filled in"
+        h = holdings.get(sym)
+        if h:   # the same stock in several accounts: add the shares, average the cost
+            known = [x for x in ((h["shares"], h["cost"]), (shares, cost)) if x[1] is not None]
+            weight = sum(x[0] for x in known)
+            h["cost"] = sum(a * b for a, b in known) / weight if known else None
+            h["shares"] += shares
+            h["accounts"] += 1
+        else:
+            holdings[sym] = {"symbol": sym, "name": name, "shares": shares, "cost": cost, "accounts": 1}
+    used = [f"“{lines[header_at][c].strip()}” → {CSV_LABELS[f]}" for f, c in columns.items()]
+    return {"holdings": list(holdings.values()), "skipped": skipped, "columns": used}
 
 
 class Worker:
@@ -1447,6 +1575,22 @@ class PortfolioStore(JsonList):
 
     def remove(self, symbol):
         self.items = [h for h in self.items if h["symbol"] != symbol]
+        self.save()
+
+    def import_holdings(self, holdings, replace=False):
+        """Add or update many holdings at once (one save). replace=True starts from an empty portfolio."""
+        if replace:
+            self.items = []
+        existing = {h["symbol"]: h for h in self.items}
+        for new in holdings:
+            record = {"symbol": new["symbol"], "name": new.get("name", ""), "shares": new["shares"],
+                      "cost": new.get("cost")}
+            if new["symbol"] in existing:     # keep the name you already have; update shares and cost
+                old = existing[new["symbol"]]
+                old.update({k: v for k, v in record.items()
+                            if v not in ("", None) and not (k == "name" and old.get("name"))})
+            else:
+                self.items.append(record)
         self.save()
 
 
@@ -2721,6 +2865,115 @@ class AlertDialog(tk.Toplevel):
             return
         self.app.alerts.add(self.symbol, self.name, self.KINDS[self.kind.selected], value)
         self.app.set_status(f"Alert saved: {self.symbol} — {describe_alert(self.app.alerts.items[-1]).lower()}")
+        self.destroy()
+
+
+class ImportDialog(tk.Toplevel):
+    """Preview a CSV before importing it into the portfolio."""
+
+    def __init__(self, app, path):
+        super().__init__(app, bg=BG)
+        self.app, self.path = app, path
+        self.title("Import portfolio from CSV — Insight by Milton")
+        self.transient(app)
+        w, h = min(S(820), int(app.winfo_width() * 0.9)), min(S(720), int(app.winfo_height() * 0.9))
+        self.geometry(f"{w}x{h}+{app.winfo_rootx() + (app.winfo_width() - w) // 2}"
+                      f"+{app.winfo_rooty() + (app.winfo_height() - h) // 3}")
+        set_dark_titlebar(self, THEME == "dark")
+        self.bind("<Escape>", lambda e: self.destroy())
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=S(30), pady=(S(24), S(10)))
+        label(head, "Import portfolio", "page_title").pack(anchor="w")
+        label(head, os.path.basename(path), "small", fg=MUTED).pack(anchor="w")
+
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(fill="x", side="bottom")
+        tk.Frame(foot, bg=BORDER, height=1).pack(fill="x")
+        self.buttons = tk.Frame(foot, bg=BG)
+        self.buttons.pack(fill="x", padx=S(30), pady=S(14))
+        RoundButton(self.buttons, "Cancel", self.destroy, kind="ghost").pack(side="right")
+
+        try:
+            self.result = parse_portfolio_csv(path)
+        except Exception as exc:
+            msg = str(exc) if isinstance(exc, ValueError) else f"Couldn't read this file ({exc})."
+            wrap_label(head, msg, "body", fg=DOWN).pack(fill="x", pady=(S(16), S(8)))
+            wrap_label(head, "A simple file works too — for example:\n\nSymbol,Shares,Average Cost\n"
+                             "AAPL,10,180\nMSFT,5,400", "small", fg=MUTED).pack(fill="x")
+            return
+        holdings = self.result["holdings"]
+        if not holdings:
+            wrap_label(head, "No holdings were found in this file.", "body", fg=DOWN).pack(fill="x", pady=S(16))
+            return
+
+        existing = set(app.portfolio.symbols)
+        updates = sum(1 for h in holdings if h["symbol"] in existing)
+        missing_cost = sum(1 for h in holdings if h["cost"] is None)
+        summary = f"Found {len(holdings)} holding{'s' if len(holdings) != 1 else ''}"
+        if updates:
+            summary += f" · {updates} already in your portfolio"
+        if self.result["skipped"]:
+            summary += f" · skipped {len(self.result['skipped'])} other row{'s' if len(self.result['skipped']) != 1 else ''}"
+        label(head, summary, "body_semi").pack(anchor="w", pady=(S(12), S(2)))
+        wrap_label(head, "Columns used: " + ";  ".join(self.result["columns"]), "small", fg=FAINT).pack(fill="x")
+
+        mode = tk.Frame(head, bg=BG)
+        mode.pack(fill="x", pady=(S(14), 0))
+        self.mode = ChipGroup(mode, ["Add & update", "Replace all"], self._mode_changed, value="Add & update")
+        self.mode.pack(side="left")
+        self.mode_note = label(mode, "", "small", fg=MUTED)
+        self.mode_note.pack(side="left", padx=S(14))
+        self._mode_changed("Add & update")
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        scroller = ScrollFrame(self)
+        scroller.pack(fill="both", expand=True)
+        table = tk.Frame(scroller.inner, bg=BG)
+        table.pack(fill="x", padx=S(30), pady=S(10))
+        heads = [("SYMBOL", "w", 90), ("NAME", "w", 0), ("SHARES", "e", 90), ("AVG COST", "e", 100), ("", "e", 120)]
+        for c, (title, anchor, width) in enumerate(heads):
+            table.columnconfigure(c, minsize=S(width), weight=1 if c == 1 else 0)
+            label(table, title, "eyebrow", fg=FAINT).grid(row=0, column=c, sticky=anchor, padx=S(6), pady=(0, S(6)))
+        for r, h in enumerate(holdings, start=1):
+            name = h["name"] if len(h["name"]) <= 40 else h["name"][:39] + "…"
+            status = ("Updates existing" if h["symbol"] in existing else "New") + (
+                f" · {h['accounts']} accounts" if h["accounts"] > 1 else "")
+            cells = [(h["symbol"], "body_semi", INK), (name, "small", MUTED), (f"{h['shares']:,g}", "body", INK),
+                     (fmt_money(h["cost"]) if h["cost"] is not None else "add later", "body",
+                      INK if h["cost"] is not None else FAINT),
+                     (status, "small", ACCENT if h["symbol"] in existing else FAINT)]
+            for c, (text, font, fg) in enumerate(cells):
+                label(table, text, font, fg=fg).grid(row=r, column=c, sticky=heads[c][1], padx=S(6), pady=S(4))
+        if missing_cost:
+            wrap_label(scroller.inner, f"{missing_cost} holding{'s have' if missing_cost != 1 else ' has'} no cost in "
+                                       "the file — value and dividends still work; add the cost later with ✎ to see "
+                                       "gains.", "small", fg=FAIR).pack(fill="x", padx=S(30), pady=(S(4), 0))
+        if self.result["skipped"]:
+            label(scroller.inner, "SKIPPED ROWS", "eyebrow", fg=FAINT).pack(anchor="w", padx=S(30), pady=(S(14), S(4)))
+            for line, what, why in self.result["skipped"][:12]:
+                label(scroller.inner, f"Line {line}:  {what or '(blank)'} — {why}", "small",
+                      fg=FAINT).pack(anchor="w", padx=S(30))
+            if len(self.result["skipped"]) > 12:
+                label(scroller.inner, f"…and {len(self.result['skipped']) - 12} more", "small",
+                      fg=FAINT).pack(anchor="w", padx=S(30))
+        tk.Frame(scroller.inner, bg=BG, height=S(16)).pack()
+        self.go = RoundButton(self.buttons, f"Import {len(holdings)} holding{'s' if len(holdings) != 1 else ''}",
+                              self.do_import)
+        self.go.pack(side="right", padx=S(10))
+
+    def _mode_changed(self, choice):
+        n = len(self.app.portfolio.items)
+        self.mode_note.configure(
+            text="Keeps your other holdings; matching symbols are updated." if choice == "Add & update" else
+            f"Removes your current {n} holding{'s' if n != 1 else ''} and uses only this file.",
+            fg=MUTED if choice == "Add & update" else DOWN)
+
+    def do_import(self):
+        replace = self.mode.selected == "Replace all"
+        holdings = self.result["holdings"]
+        self.app.portfolio.import_holdings(holdings, replace=replace)
+        self.app.set_status(f"Imported {len(holdings)} holdings from {os.path.basename(self.path)}")
         self.destroy()
 
 
@@ -4959,6 +5212,8 @@ class PortfolioPage(Page):
         head = self.page_header(wrap, "Portfolio", "Track what you own — value, gains, allocation and dividend "
                                                    "income. Prices refresh every minute.")
         RoundButton(head, "Refresh", self.refresh, kind="ghost").pack(side="right", anchor="s")
+        RoundButton(head, "Export CSV", self.export_csv, kind="ghost").pack(side="right", anchor="s", padx=(0, S(10)))
+        RoundButton(head, "Import CSV", self.import_csv).pack(side="right", anchor="s", padx=(0, S(10)))
 
         form = card(wrap)
         form.pack(fill="x")
@@ -4974,7 +5229,8 @@ class PortfolioPage(Page):
         self.cost_entry = SearchEntry(row, "Average price paid per share e.g. 180", self.save_holding, width=32)
         self.cost_entry.pack(side="left", padx=(S(10), 0))
         RoundButton(row, "Save holding", self.save_holding).pack(side="left", padx=(S(10), 0))
-        self.form_msg = label(fbox, "Tip: saving a symbol you already own updates it. Click ✎ on a row to edit.",
+        self.form_msg = label(fbox, "Tip: saving a symbol you already own updates it. Click ✎ on a row to edit. "
+                                    "To add many at once, use Import CSV — or drag a CSV file onto this window.",
                               "small", fg=FAINT)
         self.form_msg.pack(anchor="w", pady=(S(10), 0))
         Suggester(self.app, self.sym_entry, lambda s: (self.sym_entry.set(s), self.shares_entry.focus()))
@@ -4983,6 +5239,9 @@ class PortfolioPage(Page):
         label(self.empty, "Your portfolio is empty", "h2").pack(anchor="w", pady=(S(28), S(4)))
         label(self.empty, "Add your first holding above — for example AAPL, 10 shares at $180 — to see its value, "
                           "gains, allocation and dividends.", "body", fg=MUTED).pack(anchor="w")
+        label(self.empty, "Already tracking it somewhere else? Download a positions CSV from your broker (or save "
+                          "your spreadsheet as CSV) and press Import CSV, or drag the file onto this window.", "body",
+              fg=MUTED).pack(anchor="w", pady=(S(6), 0))
         self.content = tk.Frame(wrap, bg=BG)
 
         cards = tk.Frame(self.content, bg=BG)
@@ -5125,10 +5384,49 @@ class PortfolioPage(Page):
         self.app.worker.run(resolve, done,
                             lambda e: self.form_msg.configure(text=f"Couldn't find “{text}”.", fg=DOWN))
 
+    def import_csv(self, path=None):
+        path = path or filedialog.askopenfilename(
+            title="Import portfolio from CSV", filetypes=[("CSV files", "*.csv"), ("Text files", "*.txt"),
+                                                          ("All files", "*.*")])
+        if path:
+            ImportDialog(self.app, path)
+
+    def export_csv(self):
+        items = self.app.portfolio.items
+        if not items:
+            self.form_msg.configure(text="Nothing to export yet — add a holding first.", fg=DOWN)
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export portfolio", defaultextension=".csv", filetypes=[("CSV file", "*.csv")],
+            initialfile=f"Insight by Milton portfolio {datetime.now():%Y-%m-%d}.csv")
+        if not path:
+            return
+        rows = self._rows() if self.data else [dict(h, price=None, value=None, day=None, gain=None, gain_pct=None)
+                                                for h in items]
+        total = sum(r["value"] for r in rows if r["value"]) or 0
+
+        def num(v, places=2):
+            return "" if v is None else f"{v:.{places}f}"
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                out = csv.writer(f)
+                out.writerow(["Symbol", "Name", "Shares", "Average Cost", "Price", "Market Value", "Today's Change",
+                              "Total Gain", "Total Gain %", "Weight %"])
+                for r in rows:
+                    out.writerow([r["symbol"], r.get("name", ""), f"{r['shares']:g}", num(r.get("cost")),
+                                  num(r["price"]), num(r["value"]), num(r["day"]), num(r["gain"]),
+                                  num(r["gain_pct"]), num(r["value"] / total * 100 if r["value"] and total else None)])
+            self.app.set_status(f"Portfolio exported: {os.path.basename(path)}")
+        except OSError as exc:
+            self.form_msg.configure(text=f"Couldn't save the file: {exc}", fg=DOWN)
+
     def _edit(self, holding):
         self.sym_entry.set(holding["symbol"])
         self.shares_entry.set(f"{holding['shares']:g}")
-        self.cost_entry.set(f"{holding['cost']:g}")
+        if holding.get("cost") is not None:
+            self.cost_entry.set(f"{holding['cost']:g}")
+        else:
+            self.cost_entry.clear()
         self.form_msg.configure(text=f"Editing {holding['symbol']} — change the numbers and press Save holding.",
                                 fg=FAINT)
         self.scroller.to_top()
@@ -5143,11 +5441,13 @@ class PortfolioPage(Page):
             value = price * h["shares"] if price else None
             rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0
             kind = info.get("quoteType")
-            rows.append({**h, "price": price, "value": value,
+            cost = h.get("cost")      # None when imported without a cost basis
+            rows.append({**h, "name": tidy_name(info.get("shortName")) or h.get("name", ""), "cost": cost, "price": price,
+                         "value": value,
                          "day": q["change"] * h["shares"] if q else None,
                          "day_pct": q["pct"] if q else None,
-                         "gain": value - h["shares"] * h["cost"] if value is not None else None,
-                         "gain_pct": (price / h["cost"] - 1) * 100 if price and h["cost"] else None,
+                         "gain": value - h["shares"] * cost if value is not None and cost is not None else None,
+                         "gain_pct": (price / cost - 1) * 100 if price and cost else None,
                          "dividend": rate, "income": rate * h["shares"],
                          "sector": "ETFs & funds" if kind in ("ETF", "MUTUALFUND") else
                                    "Crypto" if kind == "CRYPTOCURRENCY" else info.get("sector") or "Other"})
@@ -5157,7 +5457,9 @@ class PortfolioPage(Page):
         rows = self._rows()
         priced = [r for r in rows if r["value"] is not None]
         total = sum(r["value"] for r in priced)
-        cost = sum(r["shares"] * r["cost"] for r in priced)
+        with_cost = [r for r in priced if r["cost"] is not None]
+        cost = sum(r["shares"] * r["cost"] for r in with_cost)
+        cost_value = sum(r["value"] for r in with_cost)
         day = sum(r["day"] for r in priced)
         income = sum(r["income"] for r in rows)
         start = total - day
@@ -5166,8 +5468,10 @@ class PortfolioPage(Page):
         set_card("Total value", fmt_money(total), f"{len(rows)} holding{'s' if len(rows) != 1 else ''} · "
                                                   f"cost {fmt_money(cost, decimals=0)}")
         set_card("Today", fmt_money(day, signed=True), fmt_pct(day / start * 100 if start else None), trend_color(day))
-        set_card("Total gain", fmt_money(total - cost, signed=True),
-                 fmt_pct((total / cost - 1) * 100 if cost else None), trend_color(total - cost))
+        missing = len(priced) - len(with_cost)
+        set_card("Total gain", fmt_money(cost_value - cost, signed=True),
+                 fmt_pct((cost_value / cost - 1) * 100 if cost else None)
+                 + (f" · {missing} without cost" if missing else ""), trend_color(cost_value - cost))
         set_card("Yearly dividends", fmt_money(income), f"{income / total * 100:.2f}% yield on value" if total else " ")
         self._render_table(rows, total)
         self._draw_allocation(rows, total)
@@ -5189,9 +5493,10 @@ class PortfolioPage(Page):
             for i, (_, width, stretch, _) in enumerate(self.COLUMNS):
                 row.columnconfigure(i, minsize=S(width), weight=stretch)
             gain_text = (f"{fmt_money(r['gain'], signed=True)} ({fmt_pct(r['gain_pct'])})"
-                         if r["gain"] is not None else "…")
+                         if r["gain"] is not None else "—" if r["cost"] is None else "…")
             cells = [(r["symbol"], "body_semi", INK), (r.get("name") or "", "body", MUTED),
-                     (f"{r['shares']:,g}", "body", INK), (fmt_money(r["cost"]), "body", MUTED),
+                     (f"{r['shares']:,g}", "body", INK), (fmt_money(r["cost"]) if r["cost"] is not None else "add ✎", "body",
+                      MUTED if r["cost"] is not None else FAIR),
                      (fmt_price(r["price"]) if r["price"] else "…", "body", INK),
                      (fmt_money(r["value"]) if r["value"] is not None else "…", "body_semi", INK),
                      (fmt_money(r["day"], signed=True) if r["day"] is not None else "", "body", trend_color(r["day"])),
@@ -5483,7 +5788,17 @@ class CalendarPage(Page):
 # -----------------------------------------------------------------------------
 # 9. The application window
 # -----------------------------------------------------------------------------
-class App(tk.Tk):
+try:    # optional: lets people drag a portfolio CSV onto the window
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _DropSupport = TkinterDnD.DnDWrapper
+except Exception:
+    DND_FILES, TkinterDnD = None, None
+
+    class _DropSupport:
+        pass
+
+
+class App(tk.Tk, _DropSupport):
     PAGES = [("Home", HomePage), ("Markets", MarketsPage), ("News", NewsPage), ("Watchlist", WatchlistPage),
              ("Portfolio", PortfolioPage), ("Calendar", CalendarPage), ("Bond Market", BondPage)]
 
@@ -5539,6 +5854,7 @@ class App(tk.Tk):
             self.bind_all(key, lambda e, h=how: self._key(e, lambda: self._scroll_page(h), typing_blocks=True))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(5000, self._check_alerts)
+        self._enable_drop()
         self.bind("<Configure>", lambda e: e.widget is self and self._close_suggestions())
         set_dark_titlebar(self, THEME == "dark")
         self._tick()
@@ -5722,6 +6038,37 @@ class App(tk.Tk):
             scroller.canvas.yview_scroll(how[1], how[2])
         else:
             scroller.canvas.yview_moveto(how[1])
+
+    # --- drag & drop ---------------------------------------------------------------------
+    def _enable_drop(self):
+        """Let people drop a portfolio CSV onto the window (needs the tkinterdnd2 package)."""
+        if TkinterDnD is None:
+            return
+        try:
+            TkinterDnD._require(self)
+        except Exception as exc:
+            print(f"Drag & drop unavailable: {exc}")
+            return
+        portfolio = self.pages["Portfolio"]
+        for widget in (self, self.body, portfolio, portfolio.scroller.canvas, portfolio.scroller.inner):
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_drop)
+                widget.dnd_bind("<<DropEnter>>", lambda e: (self.set_status("Drop a CSV to import it into your "
+                                                                            "portfolio"), e.action)[1])
+                widget.dnd_bind("<<DropLeave>>", lambda e: (self.set_status(""), e.action)[1])
+            except Exception as exc:
+                print(f"Couldn't enable drag & drop on {widget}: {exc}")
+
+    def _on_drop(self, event):
+        files = [f for f in self.tk.splitlist(event.data)]
+        csvs = [f for f in files if f.lower().endswith((".csv", ".txt"))]
+        if not csvs:
+            self.set_status("Only CSV files can be imported — save your spreadsheet as CSV first.")
+            return event.action
+        self.navigate("Portfolio")
+        self.pages["Portfolio"].import_csv(csvs[0])
+        return event.action
 
     # --- price alerts ------------------------------------------------------------------
     def _check_alerts(self):

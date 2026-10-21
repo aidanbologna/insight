@@ -5,3 +5,4 @@ matplotlib
 pillow
 tzdata
 win11toast
+tkinterdnd2
