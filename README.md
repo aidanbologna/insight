@@ -28,9 +28,23 @@
 
 ---
 
-## What it is
+## About
 
-Insight by Milton puts the whole market on one screen — live charts, 24 news outlets with political bias ratings, a personal portfolio tracker, price alerts, an economic calendar and the U.S. Treasury yield curve — all styled after the cream-and-terracotta look of [themiltonreview.net](https://www.themiltonreview.net).
+Insight by Milton is a desktop app built by **Aidan Bologna** as a companion to [The Milton Review](https://www.themiltonreview.net) — an independent finance publication focused on clear, accessible market commentary.
+
+The idea started simply: give Milton Review readers a native Windows app that shows the same data the articles talk about, styled to match the site. It grew from a 189-line prototype in June 2026 into a full seven-page application across ten versions — adding fundamentals analysis, 24 curated news outlets with political bias ratings, a portfolio tracker, price alerts, an economic calendar, and more.
+
+Everything is built with Python's standard library and a small set of open-source packages. No subscription, no account, no telemetry. Market data comes from Yahoo Finance; news comes straight from each publisher's RSS feed; economic calendar data is pulled from official U.S. government sources.
+
+| | |
+|---|---|
+| **Author** | Aidan Bologna |
+| **Publication** | [The Milton Review](https://www.themiltonreview.net) |
+| **Contact** | [aidanbologna@themiltonreview.net](mailto:aidanbologna@themiltonreview.net) |
+| **Built with** | Python 3.10+ · Tkinter · yfinance · matplotlib · Pillow |
+| **Platform** | Windows 10/11 |
+| **Started** | June 2026 |
+| **Current version** | v10 (October 2026) |
 
 ---
 
