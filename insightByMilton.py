@@ -1298,6 +1298,87 @@ def load_symbol(query, range_key):
         return {"symbol": symbol, "hist": hist, "info": info.result()}
 
 
+def _report_timing(when):
+    """'before the open', 'after the close' or 'during market hours' from a report timestamp (ET)."""
+    when = when.tz_convert(EASTERN) if EASTERN and when.tzinfo else when
+    minutes = when.hour * 60 + when.minute
+    if minutes in (0, 15 * 60):          # Yahoo's placeholder when the company hasn't confirmed a time
+        return "time not confirmed yet"
+    if minutes < 9 * 60 + 30:
+        return "before the market opens"
+    if minutes >= 16 * 60:
+        return "after the market closes"
+    return "during market hours"
+
+
+def fetch_earnings(symbol):
+    """The last reported quarter (EPS vs estimate, revenue vs a year ago), the beat/miss record for
+    recent quarters, and the next report date with its estimate. Cached for 6 hours."""
+    def fetch():
+        t = yf.Ticker(symbol)
+        with _INFO_SLOTS:
+            dates = t.get_earnings_dates(limit=12)
+        if dates is None or dates.empty:
+            return None
+        dates = dates.sort_index()
+        now = pd.Timestamp.now(tz=dates.index.tz)
+        reported = dates[dates["Reported EPS"].notna() & (dates.index <= now)]
+        upcoming = dates[(dates.index > now - pd.Timedelta(hours=12)) & dates["Reported EPS"].isna()]
+        result = {"last": None, "next": None, "record": []}
+        if not reported.empty:
+            when = reported.index[-1]
+            row = reported.iloc[-1]
+            last = {"date": when.to_pydatetime(), "timing": _report_timing(when),
+                    "eps": float(row["Reported EPS"]),
+                    "estimate": None if pd.isna(row["EPS Estimate"]) else float(row["EPS Estimate"]),
+                    "surprise": None if pd.isna(row["Surprise(%)"]) else float(row["Surprise(%)"]),
+                    "revenue": None, "revenue_growth": None, "quarter": None}
+            try:   # revenue for the quarter that was reported, and the same quarter a year earlier
+                with _INFO_SLOTS:
+                    stmt = t.quarterly_income_stmt
+                if stmt is not None and "Total Revenue" in stmt.index:
+                    revenue = stmt.loc["Total Revenue"].dropna().sort_index()
+                    report_day = when.tz_localize(None) if when.tzinfo else when
+                    # companies report a few weeks after the quarter ends; older columns mean the new
+                    # quarter isn't in the statements yet, so don't show last quarter's revenue instead
+                    ends = [d for d in revenue.index if pd.Timedelta(0) < report_day - d <= pd.Timedelta(days=80)]
+                    if ends:
+                        end = max(ends)
+                        last["revenue"] = float(revenue[end])
+                        last["quarter"] = end.to_pydatetime()
+                        year_ago = [d for d in revenue.index if abs((end - d).days - 365) <= 20]
+                        if year_ago and revenue[year_ago[0]]:
+                            last["revenue_growth"] = (last["revenue"] / float(revenue[year_ago[0]]) - 1) * 100
+            except Exception:
+                pass
+            result["last"] = last
+            for when, row in reported.iloc[-4:].iterrows():
+                surprise = row["Surprise(%)"]
+                if not pd.isna(surprise):
+                    result["record"].append((when.to_pydatetime(), float(surprise)))
+        if not upcoming.empty:
+            when = upcoming.index[0]
+            estimate = upcoming.iloc[0]["EPS Estimate"]
+            timing = _report_timing(when)
+            result["next"] = {"date": when.to_pydatetime(), "timing": timing,
+                              "time": "" if "confirmed" in timing else
+                              clock_time(when.tz_convert(EASTERN) if EASTERN else when) + " ET",
+                              "estimate": None if pd.isna(estimate) else float(estimate)}
+        return result
+    return _cached(("earnings", symbol), 6 * 3600, fetch)
+
+
+def beat_word(surprise):
+    """(word, rating) for an EPS surprise %: within ±1% counts as in line."""
+    if surprise is None:
+        return "Reported", None
+    if surprise > 1:
+        return "Beat", "good"
+    if surprise < -1:
+        return "Missed", "weak"
+    return "In line", "fair"
+
+
 _PREFETCHED = set()
 
 
@@ -3419,6 +3500,10 @@ GLOSSARY = [
      "how many jobs the economy added and the unemployment rate.", "Calendar"),
     ("FOMC / Fed meeting", "federal reserve interest rate decision powell", "The Federal Reserve's committee meets "
      "eight times a year to set short-term interest rates. Decisions are announced at 2:00 PM ET.", "Calendar"),
+    ("Earnings beat / miss", "eps estimate surprise earnings call report", "Each quarter companies report "
+     "earnings per share (EPS). A beat means EPS came in above what analysts expected; a miss means below. "
+     "The earnings box beside a company's name shows the last report and any call coming up this week.",
+     "Markets"),
     ("Media bias rating", "allsides bias left right center", "AllSides rates news outlets Left, Lean Left, Center, "
      "Lean Right or Right, based on reader surveys and editorial reviews.", "News"),
 ]
@@ -4196,19 +4281,21 @@ class MarketsPage(Page):
         make_clickable(back, self.show_overview)
 
         # quote header
-        title = tk.Frame(main, bg=BG)
+        quote = tk.Frame(main, bg=BG)
+        quote.pack(fill="x")
+        title = tk.Frame(quote, bg=BG)
         title.pack(fill="x")
-        self.name_label = label(title, "Loading…", "h2")
+        self.name_label = label(title, "Loading…", "h2", wraplength=S(520), justify="left")
         self.name_label.pack(anchor="w")
         self.exchange_label = label(title, "", "small", fg=FAINT)
         self.exchange_label.pack(anchor="w")
-        price_row = tk.Frame(main, bg=BG)
+        price_row = tk.Frame(quote, bg=BG)
         price_row.pack(fill="x", pady=(S(8), 0))
         self.price_label = label(price_row, "", "price")
         self.price_label.pack(side="left", anchor="s")
         self.change_label = label(price_row, "", "lead")
         self.change_label.pack(side="left", anchor="s", padx=S(14), pady=(0, S(8)))
-        self.asof_label = label(main, "", "small", fg=FAINT)
+        self.asof_label = label(quote, "", "small", fg=FAINT)
         self.asof_label.pack(anchor="w")
 
         controls = tk.Frame(main, bg=BG)
@@ -4251,6 +4338,10 @@ class MarketsPage(Page):
         self.app.alerts.listeners.append(self._update_alert_note)
         stats = card(side)
         stats.pack(fill="x")
+        self.stats_card = stats
+        self.earnings_card = card(side)    # under Key Statistics; filled by _fill_earnings, hidden for funds/crypto
+        self.earnings_box = tk.Frame(self.earnings_card, bg=SURFACE)
+        self.earnings_box.pack(fill="both", expand=True, padx=S(22), pady=S(18))
         stats_box = tk.Frame(stats, bg=SURFACE)
         stats_box.pack(fill="both", expand=True, padx=S(22), pady=S(18))
         label(stats_box, "Key Statistics", "h2").pack(anchor="w", pady=(0, S(8)))
@@ -4756,6 +4847,7 @@ class MarketsPage(Page):
         self.app.set_status(f"Loading {query.upper()}…")
         show_skeleton(self.news_box, blocks=2, lines=2)
         show_skeleton(self.stats_box, blocks=1, lines=8, pady=6)
+        self.earnings_card.pack_forget()
         self.app.worker.run(lambda: load_symbol(query, rk),
                             lambda d: self._show(rid, d), lambda e: self._failed(rid, e))
 
@@ -4866,6 +4958,89 @@ class MarketsPage(Page):
         self.app.update_title(sym)
         self.after(1, lambda: rid == self.request_id and self._fill_panels(sym, info))
 
+    def _fill_earnings(self, sym, info):
+        """Earnings box: last report vs estimates, recent beat/miss record, and the next report —
+        highlighted when it's within a week."""
+        if info.get("quoteType") != "EQUITY":
+            self.earnings_card.pack_forget()
+            return
+        self.earnings_card.pack(fill="x", pady=(S(18), 0), after=self.stats_card)
+        show_skeleton(self.earnings_box, blocks=1, lines=4, pady=4)
+
+        def show(result):
+            if not self.data or self.data["symbol"] != sym:
+                return
+            box = self.earnings_box
+            for w in box.winfo_children():
+                w.destroy()
+            label(box, "Earnings", "h2").pack(anchor="w")
+            if not result or (not result["last"] and not result["next"]):
+                label(box, "No earnings data available.", "small", fg=FAINT).pack(anchor="w", pady=(S(6), 0))
+                return
+            today = now_eastern().date() if EASTERN else datetime.now().date()
+            nxt = result["next"]
+            if nxt:
+                days = (nxt["date"].date() - today).days
+                when = nxt["date"].strftime("%a, %b %d").replace(" 0", " ")
+                if days <= 7:     # report coming up within a week: make it stand out
+                    soon = tk.Frame(box, bg=ACCENT_SOFT)
+                    soon.pack(fill="x", pady=(S(8), S(4)))
+                    inner = tk.Frame(soon, bg=ACCENT_SOFT)
+                    inner.pack(fill="x", padx=S(12), pady=S(8))
+                    rel = "today" if days <= 0 else "tomorrow" if days == 1 else f"in {days} days"
+                    label(inner, f"Earnings call {rel}", "body_semi", fg=ACCENT_DARK if THEME == "light" else ACCENT,
+                          bg=ACCENT_SOFT).pack(anchor="w")
+                    label(inner, when + (f" · {nxt['time']}" if nxt["time"] else ""), "small", fg=INK,
+                          bg=ACCENT_SOFT).pack(anchor="w")
+                    label(inner, nxt["timing"].capitalize(), "small", fg=INK, bg=ACCENT_SOFT).pack(anchor="w")
+                    if nxt["estimate"] is not None:
+                        label(inner, f"Analysts expect EPS of ${nxt['estimate']:.2f}", "small", fg=MUTED,
+                              bg=ACCENT_SOFT).pack(anchor="w")
+            last = result["last"]
+            if last:
+                word, rating = beat_word(last["surprise"])
+                head = tk.Frame(box, bg=SURFACE)
+                head.pack(fill="x", pady=(S(8), S(2)))
+                label(head, "Last report · " + short_date(last["date"]), "small_semi").pack(side="left")
+                pill_text = f"{word} {last['surprise']:+.1f}%" if last["surprise"] is not None else word
+                rating_pill(head, rating, pill_text, width=0).pack(side="right", padx=(S(12), 0))
+                rows = [("EPS", f"${last['eps']:.2f}" + (f"  vs ${last['estimate']:.2f} expected"
+                                                         if last["estimate"] is not None else ""))]
+                if last["revenue"]:
+                    growth = (f"  ({last['revenue_growth']:+.1f}% vs a year ago)"
+                              if last["revenue_growth"] is not None else "")
+                    rows.append(("Revenue", f"${fmt_big(last['revenue'])}{growth}"))
+                for name, value in rows:
+                    line = tk.Frame(box, bg=SURFACE)
+                    line.pack(fill="x", pady=S(1))
+                    label(line, name, "small", fg=MUTED, width=8, anchor="w").pack(side="left")
+                    label(line, value, "small").pack(side="left")
+            if result["record"]:
+                record = tk.Frame(box, bg=SURFACE)
+                record.pack(fill="x", pady=(S(8), 0))
+                beats = sum(1 for _, x in result["record"] if x > 1)
+                label(record, f"Beat estimates {beats} of the last {len(result['record'])} quarters", "small",
+                      fg=MUTED).pack(anchor="w")
+                squares = tk.Frame(record, bg=SURFACE)
+                squares.pack(anchor="w", pady=(S(4), 0))
+                for when, surprise in result["record"]:
+                    rating = beat_word(surprise)[1]
+                    dot = tk.Canvas(squares, width=S(14), height=S(14), bg=SURFACE, highlightthickness=0)
+                    dot.create_rectangle(1, 1, S(13), S(13), fill=RATING_STYLE[rating][0], outline="")
+                    dot.pack(side="left", padx=(0, S(5)))
+                    Tooltip(dot, f"{short_date(when)}: {beat_word(surprise)[0].lower()} by {abs(surprise):.1f}%"
+                            if rating != "fair" else f"{short_date(when)}: in line with estimates")
+            if nxt and (nxt["date"].date() - today).days > 7:
+                when = nxt["date"].strftime("%a, %b %d").replace(" 0", " ")
+                days = (nxt["date"].date() - today).days
+                label(box, f"Next report: {when} (in {days} days)", "small", fg=FAINT).pack(anchor="w", pady=(S(8), 0))
+
+        def failed(error):
+            if self.data and self.data["symbol"] == sym:
+                self.earnings_card.pack_forget()
+
+        self.app.worker.run(lambda: fetch_earnings(sym), show, failed)
+
     def _fill_panels(self, sym, info):
         """Statistics, fundamentals, profile and news — everything under and beside the chart."""
         self._fill_stats(info)
@@ -4873,6 +5048,7 @@ class MarketsPage(Page):
         self.about_title.configure(text=f"About {info.get('shortName') or sym}" if about else "")
         self.about_label.configure(text=(about[:520].rsplit(" ", 1)[0] + "…") if len(about) > 520 else about)
         self._fill_fundamentals(info)
+        self._fill_earnings(sym, info)
         self._fill_news(sym, info)
 
     def _show_range(self, rid, hist):

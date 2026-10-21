@@ -32,7 +32,7 @@
 
 Insight by Milton is a desktop app built by **Aidan Bologna** as a companion to [The Milton Review](https://www.themiltonreview.net) — an independent finance publication focused on clear, accessible market commentary.
 
-The idea started simply: give Milton Review readers a native Windows app that shows the same data the articles talk about, styled to match the site. It grew from a 189-line prototype in June 2026 into a full seven-page application across ten versions — adding fundamentals analysis, 24 curated news outlets with political bias ratings, a portfolio tracker, price alerts, an economic calendar, and more.
+The idea started simply: give Milton Review readers a native Windows app that shows the same data the articles talk about, styled to match the site. It grew from a 189-line prototype in June 2026 into a full seven-page application across ten versions — adding fundamentals analysis, earnings summaries, 24 curated news outlets with political bias ratings, a portfolio tracker, price alerts, an economic calendar, and more.
 
 Everything is built with Python's standard library and a small set of open-source packages. No subscription, no account, no telemetry. Market data comes from Yahoo Finance; news comes straight from each publisher's RSS feed; economic calendar data is pulled from official U.S. government sources.
 
@@ -57,7 +57,7 @@ Everything is built with Python's standard library and a small set of open-sourc
 </tr>
 <tr>
 <td><strong>📈 Markets</strong></td>
-<td>Market overview (indices, sectors, largest companies) · per-stock charts 1D–MAX · moving averages · volume · fundamentals · compare up to 5 stocks</td>
+<td>Market overview (indices, sectors, largest companies) · per-stock charts 1D–MAX · moving averages · volume · fundamentals · <strong>earnings</strong> (last report, beat/miss record, upcoming call alert) · compare up to 5 stocks</td>
 </tr>
 <tr>
 <td><strong>📰 News</strong></td>
@@ -130,7 +130,7 @@ Browse the full history on the [Releases](../../releases) page or the [Commits](
 
 | | Version | Highlights |
 |---|---|---|
-| v10 | Paywall Labels & Better Stock News | FREE / LIMITED / PAYWALL tags · improved stock headline matching |
+| v10 | Paywall Labels & Better Stock News | FREE / LIMITED / PAYWALL tags · improved stock headline matching · earnings box |
 | v9 | Selling & App Search | Sell shares · sales history · Ctrl+K universal search |
 | v8 | Portfolio CSV Import | Broker CSV import · drag & drop · export CSV |
 | v7 | Portfolio, Calendar & Dark Mode | Portfolio tab · Calendar tab · price alerts · dark mode |
