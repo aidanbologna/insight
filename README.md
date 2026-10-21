@@ -1,134 +1,147 @@
-# Insight by Milton — v10 (Paywall Labels & Better Stock News)
+<p align="center">
+  <img src="assets/logo.png" alt="Insight by Milton logo" width="260"/>
+</p>
 
-A desktop markets companion for **The Milton Review**, styled after
-[themiltonreview.net](https://www.themiltonreview.net).
+<h1 align="center">Insight by Milton</h1>
 
-## What's new in v10
+<p align="center">
+  A desktop markets companion for <a href="https://www.themiltonreview.net"><strong>The Milton Review</strong></a>
+  — built with Python, Tkinter and Yahoo Finance.
+</p>
 
-- **FREE / LIMITED / PAYWALL** tag on every article — on the News page, outlet pages and a stock's
-  Related Financial News. Based on each outlet's policy, refined by checking article pages in the
-  background (e.g. CNBC PRO stories, unfamiliar websites). Hover a tag for what it means.
-- **"Free to read only"** filter on the News page.
-- **Stock headlines fixed** — companies are matched by the names newsrooms use (e.g. "SpaceX" for
-  Space Exploration Technologies, "Google" for Alphabet), and a web news search adds coverage from
-  other financial sites, so stories aren't missed when they've scrolled out of the outlets' feeds.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white" alt="Python 3.10+"/>
+  <img src="https://img.shields.io/badge/platform-Windows-0078d4?logo=windows" alt="Windows"/>
+  <img src="https://img.shields.io/badge/version-v10-orange" alt="v10"/>
+  <img src="https://img.shields.io/badge/license-private-lightgrey" alt="Private"/>
+</p>
 
-## What was new in v9
+---
 
-- **Sell** on any holding — enter shares sold, sale price and date (price and date pre-filled). Shares go
-  down, the average cost stays the same, and the realized gain is saved.
-- **Sales History** on the Portfolio tab — every sale with proceeds and realized gain, totals for this
-  year and all time, and **Undo** to put the shares back.
-- **Search everything (Ctrl+K)** — a search box in the header on every page that finds stocks *and*
-  things inside the app: pages, actions (import/export CSV, dark mode, compare, alerts, shortcuts…),
-  news outlets and topics, your holdings, watchlist, alerts and calendar events, and plain-English
-  explanations (P/E, yield curve, 2s10s, ex-dividend date, CPI…).
+## Overview
 
-## What was new in v8
+Insight by Milton is a native Windows desktop app that puts the whole market on one screen — live
+charts, 16+ news outlets, a personal portfolio, price alerts, an economic calendar and the Treasury
+yield curve — all styled after the cream-and-terracotta look of themiltonreview.net.
 
-- **Import CSV** on the Portfolio tab — works with broker position exports (Fidelity, Schwab,
-  Vanguard, Robinhood, E*TRADE and others) and simple spreadsheets (`Symbol,Shares,Average Cost`).
-  Finds the table even below account info, recognises each broker's column names, converts total
-  cost basis to cost per share, combines the same stock across accounts, and skips cash, totals and
-  options. A preview lets you choose **Add & update** or **Replace all**.
-- **Drag & drop** a CSV anywhere on the window to import it.
-- **Export CSV** — saves symbol, shares, average cost, price, value, today's change, gain and weight
-  (the file can be imported again).
-- Holdings without a cost basis are allowed: value and dividends still work, gains appear once you
-  add the cost.
+<p align="center">
+  <img src="assets/icon.png" alt="App icon" width="96"/>
+</p>
 
-## What was new in v7
-
-- **Portfolio** tab — enter shares and average cost; see total value, today's change, total gain,
-  an allocation donut (by holding or sector), performance vs the S&P 500 and estimated dividend income.
-- **Calendar** tab — earnings and dividend dates for your watchlist and portfolio, Fed rate decisions,
-  CPI, the jobs report, GDP, PCE inflation and retail sales, straight from the official schedules.
-- **Price alerts** — "Set price alert" on any stock (above / below / % move); Windows notifications
-  while the app is open (even minimized), plus an in-app banner. Listed on the Watchlist page.
-- **Compare stocks** — up to 5 symbols on one % change chart with key numbers side by side.
-- **Search suggestions** — a dropdown of matching stocks as you type in the Markets search.
-- **Feedback box** — "Send an idea" (footer) and "Have an idea?" (Home) open a ready-to-send email.
-- **Dark mode** — follows Windows on first launch; the sun/moon button in the header switches it.
-- **Loading animations** — spinners over charts and pulsing placeholders while content loads.
-
-## What was new in v6
-
-- **Much faster charts** — 1M through 5Y share one cached download, so switching ranges takes about
-  0.15 s; MAX dropped from ~5 s to ~0.5 s; volume is drawn as one shape; prices and company details
-  download at the same time; a stock starts loading when you hover over it.
-- **24 news outlets** — added Business Insider, CBS News MoneyWatch, Fortune, Quartz, Reason,
-  Investor's Business Daily, Breitbart News (economy) and The Daily Signal (economy).
-- **Quality of life** — remembers window size, position and last page; recent searches on Markets;
-  keyboard shortcuts (F1 lists them); sortable watchlist columns; headlines you've opened turn gray;
-  the window title shows where you are.
-
-## What was new in v5
-
-- **Chart screenshots** — every chart has a round camera button. It saves a high-resolution PNG or
-  JPEG with a caption on the left and the Insight by Milton logo in the bottom-right corner.
-  Charts covered: the stock chart, Major Indices, Sector Performance, the Treasury yield curve and
-  Recession Watch.
-- **Finance-only related news** — a stock's "Related Financial News" now only shows stories about
-  markets, earnings, deals, analysts, the economy and similar topics.
-
-## What was new in v4
-
-- **Faster** — the window opens ~1.5 s sooner (heavy libraries load in the background), chart hovering
-  is ~4× faster (only the crosshair is redrawn), thumbnails are shrunk off the UI thread, and news
-  filtering happens instantly in memory.
-- **News from 16 outlets** — headlines come straight from each publisher's RSS feed and open directly
-  on the publisher's website. Filter by topic or keyword instantly.
-- **Source pages** — click any outlet for a summary, key facts, a Left → Right political alignment
-  scale (AllSides Media Bias Rating) and its top stories with images.
-- **Markets overview** — the Markets tab now opens on the whole market: major index cards and a
-  comparison chart, S&P 500 sector performance and the largest companies. Click anything for its full
-  detail view; "← Market overview" or the Markets tab returns to the overview.
-- Stock headlines on the detail view now come from the 16 outlets instead of Yahoo Finance.
+---
 
 ## Features
 
-- **Home** — Today's Brief, Market Snapshot, Featured Insights from The Milton Review, Today's Movers,
-  newsletter panel and rotating quotes.
-- **Markets** — market overview, plus per-stock charts (1D–MAX, moving averages, volume, hover readout),
-  key statistics, colour-coded fundamental analysis with a criteria popup, company profile and headlines.
-- **News** — 16 outlets, topic chips, instant filtering, source pages with bias scale.
-- **Watchlist** — saved symbols with live prices and sparklines, plus your price alerts.
-- **Portfolio** — holdings, gains, allocation, performance vs S&P 500, dividend income.
-- **Calendar** — earnings, dividends, Fed meetings and economic reports.
-- **Bond Market** — Treasury yield curve, spreads and recession signals.
+| Tab | What you get |
+|---|---|
+| **Home** | Today's Brief, Market Snapshot, Milton Review articles, Today's Movers, rotating investor quotes |
+| **Markets** | Per-stock charts (1D–MAX), moving averages, volume, hover readout, fundamentals, company profile, headlines |
+| **News** | 16+ outlets, topic chips, instant filtering, source pages with AllSides bias scale; **FREE / LIMITED / PAYWALL** tags |
+| **Watchlist** | Live prices, sparklines, price alerts with Windows notifications |
+| **Portfolio** | Holdings, gains, allocation donut, performance vs S&P 500, dividend income, CSV import/export, sell shares |
+| **Calendar** | Earnings, dividends, Fed meetings, CPI, jobs report, GDP, PCE, retail sales |
+| **Bond Market** | Live Treasury yield curve vs 1 month / 1 year ago, 2s10s & 3M–10Y spread signals, recession watch |
 
-## News sources and political alignment
+### Search (Ctrl+K)
+Find stocks, pages, actions, news outlets, your holdings and watchlist, price alerts, calendar events
+and plain-English explanations (P/E, yield curve, ex-dividend date…) — all from one box.
 
-Ratings are AllSides Media Bias Ratings, checked on allsides.com in October 2026. They describe each
-outlet's online news coverage and can change over time.
+### Dark mode
+Follows Windows on first launch; toggle with the sun/moon button in the header.
+
+---
+
+## News sources
+
+Ratings are [AllSides Media Bias Ratings](https://www.allsides.com/media-bias), checked October 2026.
 
 | Outlet | AllSides rating |
 |---|---|
 | The Guardian | Left |
-| CNBC, The Economist, The New York Times, NPR, Business Insider, CBS News | Lean Left |
-| WSJ (news), MarketWatch, Bloomberg, Financial Times, BBC News, Forbes, The Hill, Fortune, Quartz, Reason | Center |
-| Fox Business, Washington Examiner, The Washington Times, Investor's Business Daily | Lean Right |
-| New York Post, Breitbart News, The Daily Signal | Right |
+| CNBC · The Economist · The New York Times · NPR · Business Insider · CBS News | Lean Left |
+| WSJ · MarketWatch · Bloomberg · Financial Times · BBC News · Forbes · The Hill · Fortune · Quartz · Reason | Center |
+| Fox Business · Washington Examiner · The Washington Times · Investor's Business Daily | Lean Right |
+| New York Post · Breitbart News · The Daily Signal | Right |
 
-## Run it
+---
+
+## Quick start
 
 ```bash
 pip install -r requirements.txt
 python insightByMilton.py
 ```
 
-## Build the Windows app (.exe)
+### Build the Windows app (.exe)
 
-Double-click `build.bat`, or run:
+Double-click **`build.bat`**, or run:
 
 ```bash
-python -m PyInstaller --noconfirm --windowed --name insightByMilton --icon icon.ico --add-data "assets;assets" --add-data "icon.ico;." insightByMilton.py
+python -m PyInstaller --noconfirm --windowed --name insightByMilton ^
+    --icon icon.ico ^
+    --add-data "assets;assets" ^
+    --add-data "icon.ico;." ^
+    insightByMilton.py
 ```
+
+The app lands in `dist/insightByMilton/insightByMilton.exe`.
+
+---
+
+## Requirements
+
+```
+yfinance>=1.0
+pandas
+numpy
+matplotlib
+pillow
+tzdata
+win11toast
+tkinterdnd2
+```
+
+---
+
+## Version history
+
+Each version below is a commit in this repo's history — browse them on the [Commits](../../commits/master) page.
+
+| Version | Highlights |
+|---|---|
+| **v1 — Original** | Single Tkinter window, stock chart (yfinance), Treasury yield curve |
+| **v2 — Milton Redesign** | Full UI redesign (cream/terracotta), Home, Markets, News, Watchlist, Bond Market pages |
+| **v3 — Fundamentals** | Colour-coded fundamental analysis, criteria popup, company profile |
+| **v4 — News Sources & Speed** | 16 outlets via RSS, source pages with bias scale, Markets overview, faster charts |
+| **v5 — Chart Screenshots** | Camera button on every chart saves a branded PNG/JPEG |
+| **v6 — Speed & Quality of Life** | 4× faster chart hover, 24 outlets, remembers window size/position/page, keyboard shortcuts (F1) |
+| **v7 — Portfolio, Calendar & Dark Mode** | Portfolio tab, Calendar tab, price alerts, compare stocks, dark mode, loading animations |
+| **v8 — Portfolio CSV Import** | Import broker CSVs (Fidelity, Schwab, Vanguard, Robinhood, E\*TRADE), drag & drop, export CSV |
+| **v9 — Selling & App Search** | Sell shares, Sales History with realized gains, Ctrl+K universal search |
+| **v10 — Paywall Labels & Better Stock News** | FREE / LIMITED / PAYWALL tags on every article, "Free to read only" filter, improved stock headline matching |
+
+---
+
+## Data sources
+
+- **Yahoo Finance** (`yfinance`) — prices, charts, statistics, movers, headlines
+- **U.S. Department of the Treasury** — daily par yield curve CSV
+- **The Milton Review RSS** — https://www.themiltonreview.net/blog-feed.xml
+
+App data (watchlist, portfolio, settings, price alerts) is stored in `%APPDATA%\InsightByMilton`.
+
+---
 
 ## Disclaimer
 
 Educational commentary only — nothing in this app is financial advice. Market data comes from Yahoo
-Finance via the unofficial `yfinance` library and may be delayed. Headlines and images belong to their
-publishers; the app links to the original articles.
+Finance via the unofficial `yfinance` library and may be delayed. Headlines and images belong to
+their publishers; the app links to the original articles.
 
-© 2026 The Milton Review · aidanbologna@themiltonreview.net · https://www.themiltonreview.net
+---
+
+<p align="center">
+  © 2026 The Milton Review &nbsp;·&nbsp;
+  <a href="mailto:aidanbologna@themiltonreview.net">aidanbologna@themiltonreview.net</a> &nbsp;·&nbsp;
+  <a href="https://www.themiltonreview.net">themiltonreview.net</a>
+</p>
