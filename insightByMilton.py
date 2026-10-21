@@ -16,6 +16,7 @@ import random
 import re
 import sys
 import threading
+import time
 import webbrowser
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -116,10 +117,10 @@ DEFAULT_WATCHLIST = [
 RANGES = {
     "1D": ("1d", "5m", None),
     "5D": ("5d", "30m", None),
-    "1M": ("2y", "1d", 30),
-    "6M": ("2y", "1d", 182),
-    "YTD": ("2y", "1d", "ytd"),
-    "1Y": ("2y", "1d", 365),
+    "1M": ("10y", "1d", 30),        # 1M–5Y all come from one cached 10-year download,
+    "6M": ("10y", "1d", 182),       # so switching between them is instant
+    "YTD": ("10y", "1d", "ytd"),
+    "1Y": ("10y", "1d", 365),
     "5Y": ("10y", "1d", 365 * 5),
     "MAX": ("max", "1d", None),
 }
@@ -353,6 +354,64 @@ NEWS_SOURCES = [
               "businesses tied to the Unification Church. It covers national politics, security and the "
               "economy."},
 ]
+NEWS_SOURCES += [
+    {"id": "insider", "name": "Business Insider", "short": "BI", "color": "#1C5DB3", "bias": "Lean Left",
+     "site": "https://www.businessinsider.com", "allsides": ALLSIDES + "business-insider", "finance_only": True,
+     "feeds": ["https://feeds.businessinsider.com/custom/all"],
+     "facts": {"Founded": "2007", "Owner": "Axel Springer", "Headquarters": "New York City",
+               "Focus": "Business, tech & finance"},
+     "about": "Business Insider began in 2007 as the tech blog Silicon Alley Insider and grew into a large "
+              "digital outlet covering business, markets, technology and careers. It has been owned by "
+              "Germany's Axel Springer since 2015. Only its finance and business stories are shown here."},
+    {"id": "cbs", "name": "CBS News MoneyWatch", "short": "CBS", "color": "#1F2A44", "bias": "Lean Left",
+     "site": "https://www.cbsnews.com/moneywatch/", "allsides": ALLSIDES + "cbs-news",
+     "feeds": ["https://www.cbsnews.com/latest/rss/moneywatch"],
+     "facts": {"Headquarters": "New York City", "Focus": "Consumer finance & the economy"},
+     "about": "MoneyWatch is the business and personal-finance desk of CBS News, one of the original "
+              "American broadcast networks. It focuses on how the economy, prices, jobs and companies affect "
+              "everyday households."},
+    {"id": "fortune", "name": "Fortune", "short": "FORT", "color": "#C8102E", "bias": "Center",
+     "site": "https://fortune.com", "allsides": ALLSIDES + "fortune",
+     "feeds": ["https://fortune.com/feed/"],
+     "facts": {"Founded": "1930", "Headquarters": "New York City", "Focus": "Business & leadership"},
+     "about": "Fortune is a business magazine founded by Henry Luce in 1930, best known for the Fortune 500 "
+              "ranking of America's largest companies. It covers corporate strategy, leadership, finance "
+              "and the economy."},
+    {"id": "quartz", "name": "Quartz", "short": "QZ", "color": "#2B2B2B", "bias": "Center",
+     "site": "https://qz.com", "allsides": ALLSIDES + "quartz", "finance_only": True,
+     "feeds": ["https://qz.com/rss"],
+     "facts": {"Founded": "2012", "Headquarters": "New York City", "Focus": "Global business & economics"},
+     "about": "Quartz is a digital business news outlet launched in 2012 by Atlantic Media, known for "
+              "short, chart-heavy explainers about the global economy, markets and companies."},
+    {"id": "reason", "name": "Reason", "short": "RSN", "color": "#E2571E", "bias": "Center",
+     "site": "https://reason.com", "allsides": ALLSIDES + "reason", "finance_only": True,
+     "feeds": ["https://reason.com/latest/feed/"],
+     "facts": {"Founded": "1968", "Publisher": "Reason Foundation (nonprofit)",
+               "Focus": "Libertarian policy & economics"},
+     "about": "Reason is a libertarian magazine published by the nonprofit Reason Foundation under the "
+              "motto “Free Minds and Free Markets.” It argues for limited government and free markets. "
+              "Only its economics and business stories are shown here."},
+    {"id": "ibd", "name": "Investor's Business Daily", "short": "IBD", "color": "#00426A",
+     "bias": "Lean Right", "site": "https://www.investors.com", "allsides": ALLSIDES + "investors-business-daily",
+     "feeds": ["https://www.investors.com/feed/"],
+     "facts": {"Founded": "1984", "Owner": "News Corp (Dow Jones)", "Headquarters": "Los Angeles",
+               "Focus": "Stocks & investing strategy"},
+     "about": "Investor's Business Daily was founded by investor William O'Neil in 1984 and is built around "
+              "his CAN SLIM stock-picking method. It covers stock market action, earnings and chart "
+              "analysis for active investors."},
+    {"id": "breitbart", "name": "Breitbart News", "short": "BRBT", "color": "#D95A00", "bias": "Right",
+     "site": "https://www.breitbart.com/economy/", "allsides": ALLSIDES + "breitbart-news-media-bias",
+     "feeds": ["https://www.breitbart.com/economy/feed/"],
+     "facts": {"Founded": "2007", "Focus": "Conservative news & commentary"},
+     "about": "Breitbart News is a conservative news and opinion website founded by Andrew Breitbart in "
+              "2007. The stories shown here come from its economy section."},
+    {"id": "signal", "name": "The Daily Signal", "short": "SGNL", "color": "#9A1B1F", "bias": "Right",
+     "site": "https://www.dailysignal.com", "allsides": ALLSIDES + "daily-signal",
+     "feeds": ["https://www.dailysignal.com/category/economy/feed/"],
+     "facts": {"Founded": "2014", "Headquarters": "Washington, D.C.", "Focus": "Conservative policy news"},
+     "about": "The Daily Signal is a conservative news site launched in 2014 by The Heritage Foundation, a "
+              "Washington think tank. The stories shown here come from its economy section."},
+]
 SOURCES_BY_ID = {src["id"]: src for src in NEWS_SOURCES}
 
 NEWS_TOPICS = {
@@ -452,6 +511,7 @@ def resource_path(*parts):
 DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "InsightByMilton")
 os.makedirs(DATA_DIR, exist_ok=True)
 WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 TREASURY_CACHE = os.path.join(DATA_DIR, "treasury_cache.csv")
 
 
@@ -711,6 +771,8 @@ def fetch_source(source):
     for url in source["feeds"]:
         try:
             for art in parse_feed(http_get(url, timeout=10), source["id"]):
+                if source.get("finance_only") and not FINANCE_PATTERN.search(art["title"] + " " + art["summary"]):
+                    continue    # general-interest outlets: keep only their business stories
                 if art["link"] not in seen and art["title"] not in seen:
                     seen.update((art["link"], art["title"]))
                     articles.append(art)
@@ -819,28 +881,68 @@ def search_symbol(query):
     raise LookupError(f"Couldn't find a match for “{query}”.")
 
 
+_CACHE = {}                  # (kind, key...) -> (time fetched, value)
+_CACHE_LOCK = threading.Lock()
+
+
+def _cached(key, max_age, fetch):
+    """Return a recent cached value, or fetch and remember it. Empty results aren't cached."""
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1]
+    value = fetch()
+    if value is not None and not getattr(value, "empty", False) and not (isinstance(value, dict) and not value):
+        with _CACHE_LOCK:
+            _CACHE[key] = (time.time(), value)
+    return value
+
+
+def forget_symbol(symbol):
+    """Drop cached prices and details for a symbol so the next load is fresh."""
+    with _CACHE_LOCK:
+        for key in [k for k in _CACHE if len(k) > 1 and k[1] == symbol]:
+            del _CACHE[key]
+
+
+def _download_history(symbol, period, interval):
+    def fetch():
+        try:
+            hist = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=True)
+        except Exception:
+            return pd.DataFrame()
+        if hist.empty:
+            return hist
+        hist = hist[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+        if interval == "1d":
+            hist["MA50"] = hist["Close"].rolling(50).mean()
+            hist["MA200"] = hist["Close"].rolling(200).mean()
+        return hist
+    return _cached(("history", symbol, period, interval), 15 * 60 if interval == "1d" else 60, fetch)
+
+
 def fetch_history(symbol, range_key):
     fetch_period, interval, span = RANGES[range_key]
-    try:
-        hist = yf.Ticker(symbol).history(period=fetch_period, interval=interval, auto_adjust=True)
-    except Exception:
-        return pd.DataFrame()
-    if hist.empty:
+    hist = _download_history(symbol, fetch_period, interval)
+    if hist.empty or interval != "1d":
         return hist
-    hist = hist[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
-    if interval == "1d":
-        hist["MA50"] = hist["Close"].rolling(50).mean()
-        hist["MA200"] = hist["Close"].rolling(200).mean()
-        last = hist.index[-1]
-        if span == "ytd":
-            start = last.replace(month=1, day=1, hour=0, minute=0, second=0)
-            hist = hist[hist.index >= start]
-        elif span:
-            hist = hist[hist.index >= last - pd.Timedelta(days=span)]
+    last = hist.index[-1]
+    if span == "ytd":
+        hist = hist[hist.index >= last.replace(month=1, day=1, hour=0, minute=0, second=0)]
+    elif span:
+        hist = hist[hist.index >= last - pd.Timedelta(days=span)]
+    if len(hist) > 1600:   # decades of daily bars: one bar per week looks the same and draws far faster
+        hist = hist.resample("W-FRI").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last",
+                                           "Volume": "sum", "MA50": "last", "MA200": "last"})
+        hist = hist.dropna(subset=["Close"])
     return hist
 
 
 def fetch_info(symbol):
+    return _cached(("info", symbol), 5 * 60, lambda: _fetch_info(symbol))
+
+
+def _fetch_info(symbol):
     t = yf.Ticker(symbol)
     try:
         info = dict(t.info or {})
@@ -857,15 +959,44 @@ def fetch_info(symbol):
 
 
 def load_symbol(query, range_key):
-    """Everything the Markets page needs for one symbol."""
-    symbol = query.strip().upper()
-    hist = fetch_history(symbol, range_key) if TICKER_RE.match(symbol) else pd.DataFrame()
-    if hist.empty:
-        symbol, _ = search_symbol(query)
+    """Everything the Markets page needs for one symbol. Prices and company details download
+    at the same time; names like 'costco' go straight to a search instead of a failed lookup."""
+    text = query.strip()
+    symbol = text.upper()
+    looks_like_name = " " in text or (text.isalpha() and len(text) > 5) or not TICKER_RE.match(symbol)
+    if looks_like_name:
+        symbol, _ = search_symbol(text)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        info = pool.submit(fetch_info, symbol)
         hist = fetch_history(symbol, range_key)
-    if hist.empty:
-        raise LookupError(f"No price data found for “{query}”.")
-    return {"symbol": symbol, "hist": hist, "info": fetch_info(symbol)}
+        if hist.empty and not looks_like_name:
+            symbol, _ = search_symbol(text)
+            info = pool.submit(fetch_info, symbol)
+            hist = fetch_history(symbol, range_key)
+        if hist.empty:
+            raise LookupError(f"No price data found for “{query}”.")
+        return {"symbol": symbol, "hist": hist, "info": info.result()}
+
+
+_PREFETCHED = set()
+
+
+def prefetch(symbol, range_key="1Y"):
+    """Start downloading a symbol in the background (e.g. when the mouse moves over it)."""
+    key = (symbol, range_key)
+    if key in _PREFETCHED:
+        return
+    _PREFETCHED.add(key)
+
+    def work():
+        try:
+            fetch_history(symbol, range_key)
+            fetch_info(symbol)
+        except Exception:
+            pass
+        finally:
+            threading.Timer(5 * 60, lambda: _PREFETCHED.discard(key)).start()
+    threading.Thread(target=work, daemon=True).start()
 
 
 def fetch_treasury():
@@ -929,6 +1060,36 @@ class Worker:
             except Exception as exc:
                 print(f"Callback failed: {exc}")
         self.root.after(50, self._poll)
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except OSError as exc:
+        print(f"Couldn't save settings: {exc}")
+
+
+SHORTCUTS = [
+    ("Ctrl + 1 … 5", "Go to Home, Markets, News, Watchlist or Bond Market"),
+    ("Ctrl + F", "Jump to the search box on this page"),
+    ("Esc  or  Alt + ←", "Go back (stock → market overview, news outlet → all news)"),
+    ("←  /  →", "Change the chart range (1D … MAX) on the Markets page"),
+    ("Ctrl + S", "Save a watermarked screenshot of this page's main chart"),
+    ("F5  or  Ctrl + R", "Refresh this page"),
+    ("Page Up / Page Down", "Scroll the page"),
+    ("Home / End", "Jump to the top or bottom of the page"),
+    ("F1", "Show this list"),
+]
 
 
 class SharedFetch:
@@ -1644,17 +1805,61 @@ class HeadlineRow(tk.Frame):
             label(meta, "  ·  ", "small", fg=FAINT).pack(side="left")
             source_links = [badge, name]
         label(meta, time_ago(article["date"]) if article["date"] else "", "small", fg=FAINT).pack(side="left")
-        wrap_label(inner, article["title"], "card_title").pack(fill="x", pady=(S(4), 0))
+        visited = article["link"] in app.visited
+        title = wrap_label(inner, article["title"], "card_title", fg=MUTED if visited else INK)
+        title.pack(fill="x", pady=(S(4), 0))
+        if visited:
+            label(meta, "  ·  Read", "small", fg=FAINT).pack(side="left")
+
+        def read():
+            app.visited.add(article["link"])
+            title.configure(fg=MUTED)
+            open_link(article["link"])
         if summary and article["summary"]:
             text = article["summary"]
             text = text[:180].rsplit(" ", 1)[0] + "…" if len(text) > 180 else text
             wrap_label(inner, text, "small", fg=MUTED).pack(fill="x", pady=(S(3), 0))
         divider(self)
-        make_clickable(self, lambda: open_link(article["link"]))
+        make_clickable(self, read)
         for w in source_links:
             w.unbind("<Button-1>")
             w.bind("<Button-1>", lambda e: app.show_source(src["id"]))
         add_hover(self, lambda: set_bg(self, SAND), lambda: set_bg(self, bg))
+
+
+class ShortcutsDialog(tk.Toplevel):
+    """Small popup listing the keyboard shortcuts."""
+    instance = None
+
+    @classmethod
+    def open(cls, app):
+        if cls.instance is not None and cls.instance.winfo_exists():
+            cls.instance.lift()
+            return
+        cls.instance = cls(app)
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.title("Keyboard shortcuts — Insight by Milton")
+        self.transient(app)
+        self.resizable(False, False)
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=S(32), pady=S(26))
+        label(box, "Keyboard Shortcuts", "h2").pack(anchor="w", pady=(0, S(12)))
+        for keys, action in SHORTCUTS:
+            divider(box)
+            row = tk.Frame(box, bg=BG)
+            row.pack(fill="x", pady=S(7))
+            label(row, keys, "small_semi", width=22, anchor="w").pack(side="left")
+            label(row, action, "small", fg=MUTED).pack(side="left")
+        divider(box)
+        RoundButton(box, "Close", self.destroy, kind="dark").pack(anchor="e", pady=(S(16), 0))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f"+{x}+{y}")
+        self.focus_set()
 
 
 class CriteriaDialog(tk.Toplevel):
@@ -2097,8 +2302,13 @@ class MarketsPage(Page):
         popular.pack(fill="x", pady=(0, S(22)))
         label(popular, "POPULAR", "eyebrow", fg=FAINT).pack(side="left", padx=(0, S(12)))
         for sym in ("AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "SPY", "QQQ", "BTC-USD"):
-            RoundButton(popular, sym, lambda s=sym: self.load(s), kind="chip", font="chip",
-                        padx=12, pady=5, radius=12).pack(side="left", padx=(0, S(6)))
+            chip = RoundButton(popular, sym, lambda s=sym: self.load(s), kind="chip", font="chip",
+                               padx=12, pady=5, radius=12)
+            chip.pack(side="left", padx=(0, S(6)))
+            chip.bind("<Enter>", lambda e, s=sym: prefetch(s, self.range_key), add="+")
+        self.recent_row = tk.Frame(popular, bg=BG)
+        self.recent_row.pack(side="left", padx=(S(20), 0))
+        self._render_recent()
 
         self.overview = tk.Frame(wrap, bg=BG)
         self.overview.pack(fill="both", expand=True)
@@ -2198,6 +2408,7 @@ class MarketsPage(Page):
             change.pack(anchor="w")
             make_clickable(c, lambda s=sym: self.load(s))
             hover_border(c)
+            c.bind("<Enter>", lambda e, s=sym: prefetch(s, self.range_key), add="+")
             self.index_cards[sym] = (value, change)
 
         # comparison chart
@@ -2271,7 +2482,8 @@ class MarketsPage(Page):
             spark = Sparkline(r, height=24, width=110)
             spark.grid(row=0, column=4, sticky="e", padx=(0, S(4)))
             make_clickable(r, lambda s=sym: self.load(s))
-            add_hover(r, lambda r=r: set_bg(r, SAND), lambda r=r: set_bg(r, SURFACE))
+            add_hover(r, lambda r=r, s=sym: (set_bg(r, SAND), prefetch(s, self.range_key)),
+                      lambda r=r: set_bg(r, SURFACE))
             self.big_rows[sym] = (price, pill_box, spark)
 
     def _draw_sector_bar(self, sym):
@@ -2384,6 +2596,7 @@ class MarketsPage(Page):
         self.request_id += 1   # ignore any stock that was still loading
         self._set_mode("overview")
         self.app.set_status("")
+        self.app.update_title()
 
     def _set_mode(self, mode):
         if mode == self.mode:
@@ -2402,6 +2615,14 @@ class MarketsPage(Page):
 
     def refresh(self):
         if self.mode == "overview":
+            self._load_overview()
+
+    def reload(self):
+        """F5: fresh data for whatever is on screen."""
+        if self.mode == "detail" and self.data:
+            forget_symbol(self.data["symbol"])
+            self.load(self.data["symbol"])
+        else:
             self._load_overview()
 
     def show(self):
@@ -2430,13 +2651,43 @@ class MarketsPage(Page):
 
     def set_range(self, range_key):
         self.range_key = range_key
+        self.range_chips.set(range_key)
         if not self.data:
             return
         self.request_id += 1
         rid, sym = self.request_id, self.data["symbol"]
-        self._chart_message("Loading…")
+        slow = self.after(250, lambda: rid == self.request_id and self._chart_message("Loading…"))
         self.app.worker.run(lambda: fetch_history(sym, range_key),
-                            lambda h: self._show_range(rid, h), lambda e: self._failed(rid, e))
+                            lambda h: (self.after_cancel(slow), self._show_range(rid, h)),
+                            lambda e: (self.after_cancel(slow), self._failed(rid, e)))
+
+    def _render_recent(self):
+        for w in self.recent_row.winfo_children():
+            w.destroy()
+        recent = self.app.settings.get("recent", [])[:6]
+        if not recent:
+            return
+        label(self.recent_row, "RECENT", "eyebrow", fg=FAINT).pack(side="left", padx=(0, S(12)))
+        for sym in recent:
+            chip = RoundButton(self.recent_row, sym, lambda s=sym: self.load(s), kind="ghost", font="chip",
+                               padx=10, pady=4, radius=12)
+            chip.pack(side="left", padx=(0, S(6)))
+
+    def _remember(self, symbol):
+        recent = [symbol] + [s for s in self.app.settings.get("recent", []) if s != symbol]
+        self.app.settings["recent"] = recent[:6]
+        self._render_recent()
+
+    def step_range(self, step):
+        keys = list(RANGES)
+        target = keys[(keys.index(self.range_key) + step) % len(keys)]
+        self.set_range(target)
+
+    def screenshot(self):
+        if self.mode == "detail":
+            self.save_chart()
+        else:
+            self._screenshot_indices()
 
     def set_overlays(self, selected):
         self.overlays = set(selected)
@@ -2494,15 +2745,22 @@ class MarketsPage(Page):
         self.asof_label.configure(text=f"{'Live' if is_open else 'At close'} · as of "
                                        f"{clock_time(datetime.now())}. Prices may be delayed.")
 
+        self._update_watch_button()
+        self._draw_chart()
+        self.canvas.draw()   # paint the chart now; the panels below are built a moment later
+        self.app.set_status(f"Showing {sym}")
+        self._remember(sym)
+        self.app.update_title(sym)
+        self.after(1, lambda: rid == self.request_id and self._fill_panels(sym, info))
+
+    def _fill_panels(self, sym, info):
+        """Statistics, fundamentals, profile and news — everything under and beside the chart."""
         self._fill_stats(info)
         about = info.get("longBusinessSummary") or ""
         self.about_title.configure(text=f"About {info.get('shortName') or sym}" if about else "")
         self.about_label.configure(text=(about[:520].rsplit(" ", 1)[0] + "…") if len(about) > 520 else about)
         self._fill_fundamentals(info)
         self._fill_news(sym, info)
-        self._update_watch_button()
-        self._draw_chart()
-        self.app.set_status(f"Showing {sym}")
 
     def _show_range(self, rid, hist):
         if rid != self.request_id:
@@ -2696,7 +2954,11 @@ class MarketsPage(Page):
         if axv is not None:
             style_axes(axv, price_on_right=True)
             ax.tick_params(labelbottom=False)
-            axv.bar(x, hist["Volume"], color=BORDER, width=0.8)
+            volume = hist["Volume"].fillna(0).to_numpy()
+            if len(x) > 160:    # one shape for many bars — drawing 1,000+ rectangles is slow
+                axv.fill_between(x, volume, step="mid", color=BORDER, linewidth=0)
+            else:
+                axv.bar(x, volume, color=BORDER, width=0.8)
             axv.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: fmt_big(v) if v else ""))
             axv.yaxis.set_major_locator(MaxNLocator(2))
             axv.grid(False)
@@ -2950,6 +3212,7 @@ class SourcePage(Page):
     def open(self, source_id):
         src = SOURCES_BY_ID[source_id]
         self.source = src
+        self.app.update_title()
         self.request_id += 1
         for w in self.content.winfo_children():
             w.destroy()
@@ -3057,15 +3320,21 @@ class WatchlistPage(Page):
                ("CHANGE", 96, 0, "e"), ("% CHANGE", 104, 0, "e"), ("DAY RANGE", 180, 0, "e"),
                ("VOLUME", 100, 0, "e"), ("1 MONTH", 150, 0, "e"), ("", 44, 0, "e")]
 
+    # column index -> sort value (rows without prices always go last)
+    SORTS = {0: lambda item, q: item["symbol"], 1: lambda item, q: (item.get("name") or "").lower(),
+             2: lambda item, q: q["last"], 3: lambda item, q: q["change"], 4: lambda item, q: q["pct"],
+             6: lambda item, q: q["volume"]}
+
     def build(self):
         self.quotes = {}
+        self.sort = None   # (column, descending) or None for your own order
         self.scroller = ScrollFrame(self)
         self.scroller.pack(fill="both", expand=True)
         wrap = tk.Frame(self.scroller.inner, bg=BG)
         wrap.pack(fill="both", expand=True, padx=S(56), pady=(0, S(40)))
 
         head = self.page_header(wrap, "Watchlist", "Your saved symbols, refreshed every minute. "
-                                                   "Click a row to open its chart.")
+                                                   "Click a row to open its chart, or a column to sort.")
         controls = tk.Frame(head, bg=BG)
         controls.pack(side="right", anchor="s")
         self.entry = SearchEntry(controls, "Add a symbol e.g. COST", self.add_symbol, width=22)
@@ -3120,9 +3389,15 @@ class WatchlistPage(Page):
         header.pack(fill="x")
         self._configure_columns(header)
         for i, (title, _, _, anchor) in enumerate(self.COLUMNS):
-            label(header, title, "eyebrow", fg=FAINT).grid(row=0, column=i, sticky=anchor,
-                                                           padx=S(10), pady=(S(10), S(8)))
-        items = self.app.watchlist.items
+            arrow = ""
+            if self.sort and self.sort[0] == i:
+                arrow = "  ▼" if self.sort[1] else "  ▲"
+            head = label(header, title + arrow, "eyebrow", fg=INK if arrow else FAINT)
+            head.grid(row=0, column=i, sticky=anchor, padx=S(10), pady=(S(10), S(8)))
+            if i in self.SORTS:
+                head.configure(cursor="hand2")
+                head.bind("<Button-1>", lambda e, c=i: self._sort_by(c))
+        items = self._sorted(self.app.watchlist.items)
         if not items:
             divider(self.table)
             label(self.table, "Your watchlist is empty. Add a symbol above, or use “Add to Watchlist” "
@@ -3131,6 +3406,26 @@ class WatchlistPage(Page):
         for item in items:
             divider(self.table)
             self._row(item)
+
+    def _sort_by(self, column):
+        """Click once for ascending, again for descending, a third time for your own order."""
+        if not self.sort or self.sort[0] != column:
+            self.sort = (column, column in (2, 3, 4, 6))   # numbers start biggest-first
+        elif self.sort[1] == (column in (2, 3, 4, 6)):
+            self.sort = (column, not self.sort[1])
+        else:
+            self.sort = None
+        self.render()
+
+    def _sorted(self, items):
+        if not self.sort:
+            return items
+        column, descending = self.sort
+        key = self.SORTS[column]
+        priced = [i for i in items if column < 2 or i["symbol"] in self.quotes]
+        rest = [i for i in items if i not in priced]
+        priced.sort(key=lambda i: key(i, self.quotes.get(i["symbol"])), reverse=descending)
+        return priced + rest
 
     def _row(self, item):
         sym = item["symbol"]
@@ -3163,6 +3458,7 @@ class WatchlistPage(Page):
         remove = label(row, "✕", "body", fg=FAINT)
         remove.grid(row=0, column=8, sticky="e", padx=S(10))
         make_clickable(row, lambda: self.app.open_symbol(sym))
+        row.bind("<Enter>", lambda e: prefetch(sym, self.app.pages["Markets"].range_key), add="+")
         remove.unbind("<Button-1>")
         remove.bind("<Button-1>", lambda e: self.app.watchlist.remove(sym))
         remove.bind("<Enter>", lambda e: remove.configure(fg=DOWN), add="+")
@@ -3302,6 +3598,9 @@ class BondPage(Page):
     def _screenshot_curve(self):
         caption = "U.S. Treasury par yield curve  ·  " + self.asof.cget("text").split("  ·  ")[0]
         save_screenshot(self.app, figure_image(self.curve_fig), "Treasury yield curve", caption)
+
+    def screenshot(self):
+        self._screenshot_curve()
 
     def _screenshot_spreads(self):
         caption = chart_caption("Treasury spreads: 10Y – 2Y and 10Y – 3M", "Source: U.S. Treasury")
@@ -3465,6 +3764,7 @@ class App(tk.Tk):
         global SCALE
         super().__init__()
         SCALE = self.winfo_fpixels("1i") / 96
+        self.settings = load_settings()
         self.title(APP_NAME)
         self.configure(bg=BG)
         self._size_window()
@@ -3474,6 +3774,7 @@ class App(tk.Tk):
 
         self.worker = Worker(self)
         self.watchlist = WatchlistStore()
+        self.visited = set()   # headlines opened this session are shown in gray
         self.news = SharedFetch(self.worker, fetch_all_news, max_age=10 * 60)
         self.milton = SharedFetch(self.worker, fetch_milton_articles, max_age=30 * 60)
 
@@ -3485,21 +3786,42 @@ class App(tk.Tk):
         self.pages = {name: cls(self) for name, cls in self.PAGES}
         self.pages["Source"] = SourcePage(self)
         self.current = None
-        self.show("Home")
+        start = self.settings.get("page", "Home")
+        self.navigate(start if start in self.pages and start != "Source" else "Home")
         self.after(1500, lambda: self.news.get(lambda n: None, lambda e: None))  # warm the news cache
 
         self.bind_all("<MouseWheel>", self._on_wheel)
         for i, (name, _) in enumerate(self.PAGES, start=1):
             self.bind_all(f"<Control-Key-{i}>", lambda e, n=name: self.navigate(n))
         self.bind_all("<Control-f>", lambda e: self._focus_search())
+        self.bind_all("<Escape>", lambda e: self._key(e, self.go_back))
+        self.bind_all("<Alt-Left>", lambda e: self._key(e, self.go_back))
+        self.bind_all("<F1>", lambda e: ShortcutsDialog.open(self))
+        self.bind_all("<F5>", lambda e: self._key(e, self.reload_page))
+        self.bind_all("<Control-r>", lambda e: self._key(e, self.reload_page))
+        self.bind_all("<Control-s>", lambda e: self._key(e, self.screenshot_page))
+        self.bind_all("<Left>", lambda e: self._key(e, lambda: self._step_range(-1), typing_blocks=True))
+        self.bind_all("<Right>", lambda e: self._key(e, lambda: self._step_range(1), typing_blocks=True))
+        for key, how in (("<Prior>", ("scroll", -1, "pages")), ("<Next>", ("scroll", 1, "pages")),
+                         ("<Home>", ("moveto", 0)), ("<End>", ("moveto", 1))):
+            self.bind_all(key, lambda e, h=how: self._key(e, lambda: self._scroll_page(h), typing_blocks=True))
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._tick()
 
     # --- window setup -----------------------------------------------------------
     def _size_window(self):
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         w, h = min(S(1400), int(sw * 0.92)), min(S(900), int(sh * 0.88))
-        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{max((sh - h) // 2 - S(20), 0)}")
         self.minsize(min(S(1100), w), min(S(680), h))
+        saved = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", self.settings.get("geometry", ""))
+        if saved:   # reopen where you left it, as long as it still fits on this screen
+            sw_, sh_, sx, sy = map(int, saved.groups())
+            if sw_ <= sw and sh_ <= sh and -20 <= sx <= sw - 200 and 0 <= sy <= sh - 200:
+                self.geometry(saved.group(0))
+                if self.settings.get("zoomed"):
+                    self.after(10, lambda: self.state("zoomed"))
+                return
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{max((sh - h) // 2 - S(20), 0)}")
 
     def _set_icon(self):
         ico = resource_path("icon.ico")
@@ -3566,6 +3888,9 @@ class App(tk.Tk):
         self.status_label.pack(side="left", padx=S(24))
         self.clock_label = label(inner, "", "small_semi")
         self.clock_label.pack(side="right")
+        keys = label(inner, "Shortcuts (F1)", "small", fg=ACCENT, cursor="hand2")
+        keys.pack(side="right", padx=(0, S(24)))
+        keys.bind("<Button-1>", lambda e: ShortcutsDialog.open(self))
         contact = label(inner, f"© {datetime.now().year} The Milton Review  ·  Not financial advice  ·  "
                                f"{CONTACT_EMAIL}", "small", fg=FAINT, cursor="hand2")
         contact.pack(side="right", padx=S(24))
@@ -3583,6 +3908,7 @@ class App(tk.Tk):
         page = self.pages[name]
         page.pack(fill="both", expand=True)
         page.show()
+        self.update_title()
         active = self._active_nav()
         for n, link in self.nav_links.items():
             link.configure(fg=ACCENT if n == active else INK,
@@ -3604,6 +3930,69 @@ class App(tk.Tk):
     def open_symbol(self, symbol):
         self.show("Markets")
         self.pages["Markets"].load(symbol)
+
+    def update_title(self, detail=None):
+        page = self.current or ""
+        if page == "Source" and self.pages["Source"].source:
+            detail, page = self.pages["Source"].source["name"], "News"
+        self.title(" — ".join(x for x in (APP_NAME, page, detail) if x))
+
+    # --- keyboard -----------------------------------------------------------------------
+    def _key(self, event, action, typing_blocks=False):
+        """Run a shortcut only for the main window, and not while typing if it would clash."""
+        try:
+            if event.widget.winfo_toplevel() is not self:
+                return
+        except (AttributeError, tk.TclError):
+            return
+        if typing_blocks and isinstance(self.focus_get(), tk.Entry):
+            return
+        action()
+        return "break"
+
+    def go_back(self):
+        if self.current == "Source":
+            self.navigate("News")
+        elif self.current == "Markets" and self.pages["Markets"].mode == "detail":
+            self.pages["Markets"].show_overview()
+        elif isinstance(self.focus_get(), tk.Entry):
+            self.focus_set()
+
+    def reload_page(self):
+        page = self.pages[self.current]
+        if self.current == "Source" and page.source:
+            self.news.get(lambda n: page.open(page.source["id"]), force=True)
+        elif hasattr(page, "reload"):
+            page.reload()
+        else:
+            page.refresh()
+        self.set_status("Refreshing…")
+
+    def screenshot_page(self):
+        page = self.pages[self.current]
+        if hasattr(page, "screenshot"):
+            page.screenshot()
+
+    def _step_range(self, step):
+        if self.current == "Markets":
+            self.pages["Markets"].step_range(step)
+
+    def _scroll_page(self, how):
+        scroller = getattr(self.pages[self.current], "scroller", None)
+        if scroller is None:
+            return
+        if how[0] == "scroll":
+            scroller.canvas.yview_scroll(how[1], how[2])
+        else:
+            scroller.canvas.yview_moveto(how[1])
+
+    def _on_close(self):
+        self.settings["zoomed"] = self.state() == "zoomed"
+        if self.state() == "normal":
+            self.settings["geometry"] = self.geometry()
+        self.settings["page"] = self._active_nav()
+        save_settings(self.settings)
+        self.destroy()
 
     def _focus_search(self):
         page = self.pages[self.current]

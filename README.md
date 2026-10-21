@@ -1,9 +1,20 @@
-# Insight by Milton — v5 (Chart Screenshots)
+# Insight by Milton — v6 (Speed & Quality of Life)
 
 A desktop markets companion for **The Milton Review**, styled after
 [themiltonreview.net](https://www.themiltonreview.net).
 
-## What's new in v5
+## What's new in v6
+
+- **Much faster charts** — 1M through 5Y share one cached download, so switching ranges takes about
+  0.15 s; MAX dropped from ~5 s to ~0.5 s; volume is drawn as one shape; prices and company details
+  download at the same time; a stock starts loading when you hover over it.
+- **24 news outlets** — added Business Insider, CBS News MoneyWatch, Fortune, Quartz, Reason,
+  Investor's Business Daily, Breitbart News (economy) and The Daily Signal (economy).
+- **Quality of life** — remembers window size, position and last page; recent searches on Markets;
+  keyboard shortcuts (F1 lists them); sortable watchlist columns; headlines you've opened turn gray;
+  the window title shows where you are.
+
+## What was new in v5
 
 - **Chart screenshots** — every chart has a round camera button. It saves a high-resolution PNG or
   JPEG with a caption on the left and the Insight by Milton logo in the bottom-right corner.
@@ -44,10 +55,10 @@ outlet's online news coverage and can change over time.
 | Outlet | AllSides rating |
 |---|---|
 | The Guardian | Left |
-| CNBC, The Economist, The New York Times, NPR | Lean Left |
-| The Wall Street Journal (news), MarketWatch, Bloomberg, Financial Times, BBC News, Forbes, The Hill | Center |
-| Fox Business, Washington Examiner, The Washington Times | Lean Right |
-| New York Post | Right |
+| CNBC, The Economist, The New York Times, NPR, Business Insider, CBS News | Lean Left |
+| WSJ (news), MarketWatch, Bloomberg, Financial Times, BBC News, Forbes, The Hill, Fortune, Quartz, Reason | Center |
+| Fox Business, Washington Examiner, The Washington Times, Investor's Business Daily | Lean Right |
+| New York Post, Breitbart News, The Daily Signal | Right |
 
 ## Run it
 
