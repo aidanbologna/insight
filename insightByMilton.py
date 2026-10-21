@@ -128,7 +128,7 @@ def set_dark_titlebar(window, dark):
         pass
 
 
-VERSION = "8.0"
+VERSION = "9.0"
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
 BLOG_URL = SITE_URL + "/blog"
@@ -575,6 +575,7 @@ WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 PORTFOLIO_FILE = os.path.join(DATA_DIR, "portfolio.json")
 ALERTS_FILE = os.path.join(DATA_DIR, "alerts.json")
+SALES_FILE = os.path.join(DATA_DIR, "sales.json")
 TREASURY_CACHE = os.path.join(DATA_DIR, "treasury_cache.csv")
 
 
@@ -1486,6 +1487,7 @@ def save_settings(settings):
 
 SHORTCUTS = [
     ("Ctrl + 1 … 7", "Go to Home, Markets, News, Watchlist, Portfolio, Calendar or Bond Market"),
+    ("Ctrl + K", "Search stocks and everything in the app (pages, actions, outlets, help)"),
     ("Ctrl + F", "Jump to the search box on this page"),
     ("Esc  or  Alt + ←", "Go back (stock → market overview, news outlet → all news)"),
     ("←  /  →", "Change the chart range (1D … MAX) on the Markets page"),
@@ -1591,6 +1593,23 @@ class PortfolioStore(JsonList):
                             if v not in ("", None) and not (k == "name" and old.get("name"))})
             else:
                 self.items.append(record)
+        self.save()
+
+
+class SalesStore(JsonList):
+    """Shares you've sold: date, symbol, shares, sale price and the average cost at the time."""
+
+    def __init__(self):
+        super().__init__(SALES_FILE)
+
+    def add(self, symbol, name, shares, price, cost, date):
+        gain = (price - cost) * shares if cost is not None else None
+        self.items.append({"id": f"{symbol}-{time.time():.3f}", "date": date, "symbol": symbol, "name": name,
+                           "shares": shares, "price": price, "cost": cost, "gain": gain})
+        self.save()
+
+    def remove(self, sale_id):
+        self.items = [x for x in self.items if x["id"] != sale_id]
         self.save()
 
 
@@ -2975,6 +2994,437 @@ class ImportDialog(tk.Toplevel):
         self.app.portfolio.import_holdings(holdings, replace=replace)
         self.app.set_status(f"Imported {len(holdings)} holdings from {os.path.basename(self.path)}")
         self.destroy()
+
+
+class SellDialog(tk.Toplevel):
+    """Record selling some or all of a holding. Average cost stays the same; the gain is saved."""
+
+    def __init__(self, app, holding, price):
+        super().__init__(app, bg=BG)
+        self.app, self.holding = app, holding
+        self.held, self.cost = holding["shares"], holding.get("cost")
+        sym = holding["symbol"]
+        self.title(f"Sell {sym} — Insight by Milton")
+        self.transient(app)
+        self.resizable(False, False)
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=S(30), pady=S(24))
+        label(box, f"Sell {sym}", "h2").pack(anchor="w")
+        owned = f"You own {self.held:,g} shares" + (f" · average cost {fmt_money(self.cost)}" if self.cost else "")
+        label(box, owned, "small", fg=MUTED).pack(anchor="w", pady=(0, S(16)))
+
+        form = tk.Frame(box, bg=BG)
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
+        rows = (("Shares to sell", f"up to {self.held:g}"), ("Sale price per share", "e.g. 340.00"),
+                ("Date of sale", "YYYY-MM-DD"))
+        self.entries = []
+        for r, (title, hint) in enumerate(rows):
+            label(form, title, "body", fg=MUTED).grid(row=r, column=0, sticky="w", pady=S(5), padx=(0, S(16)))
+            entry = SearchEntry(form, hint, self.save, width=16)
+            entry.grid(row=r, column=1, sticky="w", pady=S(5))
+            entry.entry.bind("<KeyRelease>", lambda e: self._preview(), add="+")
+            self.entries.append(entry)
+        self.shares, self.price, self.date = self.entries
+        everything = label(form, "Sell all", "small_semi", fg=ACCENT, cursor="hand2")
+        everything.grid(row=0, column=2, sticky="w", padx=S(12))
+        everything.bind("<Button-1>", lambda e: (self.shares.set(f"{self.held:g}"), self._preview()))
+        if price:
+            self.price.set(f"{price:.2f}")
+        self.date.set(datetime.now().strftime("%Y-%m-%d"))
+
+        self.result = label(box, " ", "body_semi")
+        self.result.pack(anchor="w", pady=(S(16), S(2)))
+        self.note = label(box, "The rest of the holding keeps its average cost. You can undo a sale in Sales History.",
+                          "small", fg=FAINT, wraplength=S(440), justify="left")
+        self.note.pack(anchor="w", pady=(0, S(16)))
+        buttons = tk.Frame(box, bg=BG)
+        buttons.pack(fill="x")
+        RoundButton(buttons, "Record sale", self.save).pack(side="right")
+        RoundButton(buttons, "Cancel", self.destroy, kind="ghost").pack(side="right", padx=S(10))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        self.geometry(f"+{app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2}"
+                      f"+{app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3}")
+        set_dark_titlebar(self, THEME == "dark")
+        self.shares.focus()
+
+    def _values(self):
+        def num(entry):
+            try:
+                return float(entry.get().replace("$", "").replace(",", ""))
+            except ValueError:
+                return None
+        return num(self.shares), num(self.price)
+
+    def _preview(self):
+        shares, price = self._values()
+        if not shares or not price:
+            self.result.configure(text=" ")
+            return
+        text = f"Proceeds {fmt_money(shares * price)}"
+        if self.cost:
+            gain = (price - self.cost) * shares
+            text += f"  ·  realized gain {fmt_money(gain, signed=True)} ({fmt_pct((price / self.cost - 1) * 100)})"
+            self.result.configure(text=text, fg=trend_color(gain))
+        else:
+            self.result.configure(text=text + "  ·  gain unknown (no average cost)", fg=INK)
+
+    def save(self):
+        shares, price = self._values()
+        if not shares or shares <= 0 or shares > self.held + 1e-9:
+            self.note.configure(text=f"Enter how many shares you sold (up to {self.held:g}).", fg=DOWN)
+            return
+        if not price or price <= 0:
+            self.note.configure(text="Enter the price you sold at.", fg=DOWN)
+            return
+        try:
+            date = datetime.strptime(self.date.get() or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d")
+        except ValueError:
+            self.note.configure(text="Enter the date like 2026-10-19.", fg=DOWN)
+            return
+        h = self.holding
+        self.app.sales.add(h["symbol"], h.get("name", ""), shares, price, self.cost, date.strftime("%Y-%m-%d"))
+        left = self.held - shares
+        if left <= 1e-9:
+            self.app.portfolio.remove(h["symbol"])
+        else:
+            self.app.portfolio.set_holding(h["symbol"], h.get("name", ""), round(left, 8), self.cost)
+        self.app.set_status(f"Recorded sale: {shares:g} {h['symbol']} at {fmt_money(price)}")
+        self.destroy()
+
+
+class InfoDialog(tk.Toplevel):
+    """A short explanation from the search bar, with a button to the related page."""
+
+    def __init__(self, app, title, text, open_label=None, open_action=None):
+        super().__init__(app, bg=BG)
+        self.title(f"{title} — Insight by Milton")
+        self.transient(app)
+        self.resizable(False, False)
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=S(30), pady=S(24))
+        label(box, "EXPLAINED", "eyebrow", fg=ACCENT).pack(anchor="w")
+        label(box, title, "h2").pack(anchor="w", pady=(S(4), S(8)))
+        label(box, text, "body", fg=MUTED, wraplength=S(460), justify="left").pack(anchor="w")
+        buttons = tk.Frame(box, bg=BG)
+        buttons.pack(fill="x", pady=(S(20), 0))
+        RoundButton(buttons, "Close", self.destroy, kind="ghost").pack(side="right")
+        if open_action:
+            RoundButton(buttons, open_label, lambda: (self.destroy(), open_action())).pack(side="right", padx=S(10))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        self.geometry(f"+{app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2}"
+                      f"+{app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3}")
+        set_dark_titlebar(self, THEME == "dark")
+
+
+# Plain-English explanations the search bar can open: (term, other words people might type, text, page)
+GLOSSARY = [
+    ("Yield curve", "treasury bonds rates maturities", "A line showing what the U.S. government pays to borrow for "
+     "different lengths of time, from 1 month to 30 years. Normally it slopes upward.", "Bond Market"),
+    ("Inverted yield curve", "inversion recession signal", "When short-term Treasury yields are higher than "
+     "long-term ones. Inversions have come before most U.S. recessions since the 1970s, though not every time.",
+     "Bond Market"),
+    ("2s10s spread", "2y 10y spread 10y-2y", "The 10-year Treasury yield minus the 2-year yield. Below zero means "
+     "the yield curve is inverted.", "Bond Market"),
+    ("Moving average", "50-day 200-day ma trend", "The average closing price over the last 50 or 200 trading days. "
+     "It smooths out daily noise so the trend is easier to see.", "Markets"),
+    ("Market cap", "market capitalization size value", "Share price × number of shares — what the whole company is "
+     "worth on the stock market.", "Markets"),
+    ("Sector ETFs", "sectors xlk xlf xle spdr", "Funds that hold all the S&P 500 companies in one sector, such as "
+     "XLK for technology or XLE for energy.", "Markets"),
+    ("Dividend yield", "dividends income yield", "A year of dividends per share divided by the share price — the "
+     "income you get as a percentage of what the stock costs.", "Portfolio"),
+    ("Ex-dividend date", "ex date dividend date", "You need to own the shares before this date to receive the next "
+     "dividend payment.", "Calendar"),
+    ("Average cost", "cost basis avg cost", "The total you paid for your shares divided by how many you own. "
+     "Selling some shares doesn't change it.", "Portfolio"),
+    ("Realized vs unrealized gains", "realised profit sold capital gains", "Realized gains come from shares you've "
+     "sold (see Sales History); unrealized gains are on shares you still own.", "Portfolio"),
+    ("CPI (inflation)", "consumer price index inflation prices", "The Consumer Price Index tracks the prices of "
+     "everyday goods and services. Its yearly change is the most-watched measure of inflation.", "Calendar"),
+    ("Jobs report", "employment situation unemployment payrolls nonfarm", "The monthly Employment Situation report: "
+     "how many jobs the economy added and the unemployment rate.", "Calendar"),
+    ("FOMC / Fed meeting", "federal reserve interest rate decision powell", "The Federal Reserve's committee meets "
+     "eight times a year to set short-term interest rates. Decisions are announced at 2:00 PM ET.", "Calendar"),
+    ("Media bias rating", "allsides bias left right center", "AllSides rates news outlets Left, Lean Left, Center, "
+     "Lean Right or Right, based on reader surveys and editorial reviews.", "News"),
+]
+
+SEARCH_GROUPS = ["GO TO", "ACTIONS", "YOUR STUFF", "NEWS", "HELP", "STOCKS"]
+
+
+def search_score(item, query):
+    """How well a search item matches what was typed (0 = not at all)."""
+    title = item["title"].lower()
+    text = f"{title} {item.get('keywords', '')} {item.get('detail', '')}".lower()
+    if title == query:
+        return 100
+    if title.startswith(query):
+        return 80
+    words = re.split(r"[^a-z0-9&^.\-]+", text)
+    if any(w.startswith(query) for w in words if w):
+        return 60
+    if query in f"{title} {item.get('keywords', '')}".lower():   # loose match: titles and keywords only
+        return 40
+    parts = query.split()
+    if len(parts) > 1 and all(any(w.startswith(p) for w in words if w) for p in parts):
+        return 30
+    return 0
+
+
+class AppSearch:
+    """The header search: stocks plus everything inside the app — pages, actions, news outlets,
+    your holdings, watchlist, alerts and calendar, and plain-English explanations."""
+
+    def __init__(self, app, search):
+        self.app, self.search = app, search
+        self.popup, self.items, self.index, self.job, self.request, self.rows = None, [], -1, None, 0, []
+        app.suggesters.append(self)
+        e = search.entry
+        e.bind("<KeyRelease>", self._on_key, add="+")
+        e.bind("<FocusIn>", lambda ev: self._schedule(), add="+")
+        e.bind("<FocusOut>", lambda ev: e.after(200, self._close_if_unfocused), add="+")
+        e.bind("<Down>", lambda ev: self._move(1))
+        e.bind("<Up>", lambda ev: self._move(-1))
+        e.bind("<Return>", self._on_return)
+        e.bind("<Escape>", self._on_escape)
+
+    # --- what can be found ------------------------------------------------------------
+    def _index(self):
+        app = self.app
+        items = []
+
+        def add(group, title, action, detail="", keywords="", hint=""):
+            items.append({"group": group, "title": title, "action": action, "detail": detail,
+                          "keywords": keywords, "hint": hint})
+
+        page_words = {"Home": "start brief snapshot movers quotes", "Markets": "stocks overview indices sectors chart",
+                      "News": "headlines articles outlets", "Watchlist": "saved symbols alerts",
+                      "Portfolio": "holdings investments shares gains allocation dividends sales",
+                      "Calendar": "earnings dividends fed cpi jobs gdp events schedule",
+                      "Bond Market": "treasury yields yield curve bonds recession"}
+        for name, _ in app.PAGES:
+            add("GO TO", name, lambda n=name: app.navigate(n), page_words.get(name, ""), page_words.get(name, ""), "Page")
+        pf = app.pages["Portfolio"]
+        markets = app.pages["Markets"]
+        add("ACTIONS", "Import portfolio from CSV", lambda: (app.navigate("Portfolio"), pf.import_csv()),
+            "Fidelity, Schwab, Vanguard, Robinhood or your own spreadsheet", "upload broker file csv import")
+        add("ACTIONS", "Export portfolio to CSV", lambda: (app.navigate("Portfolio"), pf.export_csv()),
+            "Save your holdings as a spreadsheet", "download save csv export")
+        add("ACTIONS", "Record a sale", lambda: app.navigate("Portfolio"), "Use “Sell” on a holding in Portfolio",
+            "sell sold selling sale")
+        add("ACTIONS", "Sales history", lambda: (app.navigate("Portfolio"), pf.scroll_to_sales()),
+            "Realized gains from shares you sold", "sold realized gains")
+        add("ACTIONS", "Compare stocks", lambda: (app.navigate("Markets"), markets.open_compare()),
+            "Chart up to 5 stocks against each other", "versus vs comparison")
+        add("ACTIONS", "Price alerts", lambda: (app.navigate("Watchlist"), app.pages["Watchlist"].scroller.canvas.yview_moveto(1)),
+            "Set them from a stock's page; see them on Watchlist", "alert notify notification")
+        add("ACTIONS", "Switch to light mode" if THEME == "dark" else "Switch to dark mode", app.toggle_theme,
+            "Change the app's colours", "theme dark mode light mode night")
+        add("ACTIONS", "Send an idea", lambda: FeedbackDialog.open(app), "Suggest a feature or report a bug",
+            "feedback suggestion bug contact email")
+        add("ACTIONS", "Keyboard shortcuts", lambda: ShortcutsDialog.open(app), "F1", "keys hotkeys", "F1")
+        add("ACTIONS", "How fundamentals are judged", lambda: CriteriaDialog.open(app),
+            "Green / yellow / red rules for every value", "fundamental analysis ratings criteria")
+        add("ACTIONS", "Refresh this page", app.reload_page, "Fetch the latest data", "reload update", "F5")
+        add("ACTIONS", "Screenshot this page's chart", app.screenshot_page, "Watermarked image",
+            "camera save image picture", "Ctrl+S")
+        add("ACTIONS", "Subscribe to The Milton Review", lambda: open_link(SITE_URL), "Newsletter on the website",
+            "newsletter subscribe")
+        add("ACTIONS", "Read The Milton Review", lambda: open_link(BLOG_URL), "Articles on the website",
+            "blog articles website")
+
+        for src in NEWS_SOURCES:
+            add("NEWS", src["name"], lambda i=src["id"]: app.show_source(i), f"News outlet · {src['bias']}",
+                f"{src['short']} {src['id']} outlet source")
+        news = app.pages["News"]
+        for topic in NEWS_TOPICS:
+            if topic != "All":
+                add("NEWS", f"{topic} news", lambda t=topic: (app.navigate("News"), news.topics.set(t), news.set_topic(t)),
+                    "Headlines on this topic", " ".join(NEWS_TOPICS[topic][:6]))
+
+        for h in app.portfolio.items:
+            add("YOUR STUFF", h["symbol"], lambda s=h["symbol"]: app.open_symbol(s),
+                f"In your portfolio · {h['shares']:,g} shares", f"{h.get('name', '')} holding")
+        held = set(app.portfolio.symbols)
+        for w in app.watchlist.items:
+            if w["symbol"] not in held:
+                add("YOUR STUFF", w["symbol"], lambda s=w["symbol"]: app.open_symbol(s), "On your watchlist",
+                    w.get("name", ""))
+        for a in app.alerts.items:
+            status = "triggered" if a["triggered"] else "watching"
+            add("YOUR STUFF", f"{a['symbol']} alert", lambda: (app.navigate("Watchlist"),
+                                                              app.pages["Watchlist"].scroller.canvas.yview_moveto(1)),
+                f"{describe_alert(a)} · {status}", "alert price")
+        calendar = app.pages["Calendar"]
+        for e in (calendar.result or {}).get("events", [])[:60]:
+            add("YOUR STUFF", e["title"], lambda: app.navigate("Calendar"),
+                e["date"].strftime("%a, %b %d").replace(" 0", " ") + " · Calendar", f"{e.get('symbol', '')} {e['type']}")
+
+        for term, words, text, page in GLOSSARY:
+            add("HELP", term, lambda t=term, x=text, pg=page: InfoDialog(app, t, x, f"Open {pg}", lambda: app.navigate(pg)),
+                text[:70] + "…", words)
+        for _, metrics in FUNDAMENTALS:
+            for spec in metrics:
+                add("HELP", spec["name"], lambda: CriteriaDialog.open(app), spec["about"][:70] + "…",
+                    "fundamental ratio metric")
+        return items
+
+    def _local_stocks(self, query):
+        names = dict(KNOWN_NAMES)
+        names.update({i["symbol"]: i.get("name", "") for i in self.app.watchlist.items})
+        q = query.lower()
+        found = [(sym, name) for sym, name in names.items()
+                 if sym.lower().startswith(q) or any(w.startswith(q) for w in name.lower().split())]
+        found.sort(key=lambda x: (x[0].lower() != q, x[0]))
+        return [{"group": "STOCKS", "title": sym, "detail": name, "hint": "",
+                 "action": lambda s=sym: self.app.open_symbol(s)} for sym, name in found[:4]]
+
+    def _results(self, query, remote=()):
+        q = query.lower().strip()
+        if not q:
+            recent = self.app.settings.get("recent", [])[:3]
+            quick = [i for i in self._index() if i["title"] in ("Portfolio", "Calendar", "Import portfolio from CSV",
+                                                                "Compare stocks", "Price alerts")]
+            return quick + [{"group": "STOCKS", "title": s, "detail": KNOWN_NAMES.get(s, "Recent search"), "hint": "",
+                             "action": lambda x=s: self.app.open_symbol(x)} for s in recent]
+        scored = [(search_score(i, q), i) for i in self._index()]
+        scored = [(sc, i) for sc, i in scored if sc]
+        scored.sort(key=lambda x: -x[0])
+        groups = {g: [] for g in SEARCH_GROUPS}
+        for _, item in scored:
+            if len(groups[item["group"]]) < (4 if item["group"] != "YOUR STUFF" else 5):
+                groups[item["group"]].append(item)
+        stocks = self._local_stocks(q)
+        seen = {i["title"] for i in stocks}
+        for r in remote:
+            if r["symbol"] not in seen and len(stocks) < 6:
+                seen.add(r["symbol"])
+                stocks.append({"group": "STOCKS", "title": r["symbol"], "detail": r["name"], "hint": r.get("detail", ""),
+                               "action": lambda s=r["symbol"]: self.app.open_symbol(s)})
+        groups["STOCKS"] = stocks
+        # put the group with the best match first, then the usual order
+        best = scored[0][1]["group"] if scored and scored[0][0] >= 80 else None
+        order = ([best] if best else []) + [g for g in SEARCH_GROUPS if g != best]
+        return [i for g in order for i in groups[g]][:16]
+
+    # --- typing -------------------------------------------------------------------------
+    def _on_key(self, event):
+        if event.keysym not in ("Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R",
+                                "Control_L", "Control_R"):
+            self._schedule()
+
+    def _schedule(self):
+        if self.job:
+            self.search.after_cancel(self.job)
+        self.job = self.search.after(120, self._update)
+
+    def _update(self):
+        self.job = None
+        if self.app.focus_get() is not self.search.entry:
+            return
+        query = self.search.get()
+        self._show(self._results(query))
+        if query and len(query) <= 40:
+            self.request += 1
+            rid = self.request
+            self.app.worker.run(lambda: search_suggestions(query),
+                                lambda remote: rid == self.request and self._show(self._results(query, remote)),
+                                lambda e: None)
+
+    # --- popup ----------------------------------------------------------------------------
+    def _show(self, items):
+        if self.app.focus_get() is not self.search.entry:
+            self.close()
+            return
+        if not items:
+            items = [{"group": "STOCKS", "title": f"Search for “{self.search.get()}”", "detail": "Look it up on Markets",
+                      "hint": "Enter", "action": lambda q=self.search.get(): self.app.open_symbol(q)}]
+        self.items, self.index = items, -1
+        if self.popup is None:
+            self.popup = tk.Toplevel(self.app)
+            self.popup.wm_overrideredirect(True)
+            self.popup.configure(bg=BORDER)
+            self.box = tk.Frame(self.popup, bg=SURFACE)
+            self.box.pack(fill="both", expand=True, padx=1, pady=1)
+        for w in self.box.winfo_children():
+            w.destroy()
+        self.rows, group = [], None
+        for i, item in enumerate(items):
+            if item["group"] != group:
+                group = item["group"]
+                label(self.box, group, "eyebrow", fg=FAINT, bg=SURFACE).pack(anchor="w", padx=S(14), pady=(S(8), S(2)))
+            row = tk.Frame(self.box, bg=SURFACE, cursor="hand2")
+            row.pack(fill="x")
+            title = item["title"] if len(item["title"]) <= 44 else item["title"][:43] + "…"
+            label(row, title, "body_semi").pack(side="left", padx=(S(14), S(10)), pady=S(5))
+            detail = item.get("detail", "")
+            detail = detail if len(detail) <= 46 else detail[:45] + "…"
+            label(row, detail, "small", fg=MUTED).pack(side="left")
+            if item.get("hint"):
+                label(row, item["hint"], "small", fg=FAINT).pack(side="right", padx=S(14))
+            for w in descendants(row):
+                w.bind("<Button-1>", lambda e, k=i: self.pick(k))
+                w.bind("<Enter>", lambda e, k=i: self._highlight(k))
+            self.rows.append(row)
+        tk.Frame(self.box, bg=SURFACE, height=S(6)).pack()
+        frame = self.search
+        frame.update_idletasks()
+        width = S(520)
+        x = frame.winfo_rootx() + frame.winfo_width() - width
+        y = frame.winfo_rooty() + frame.winfo_height() + S(4)
+        self.popup.geometry(f"{width}x{self.box.winfo_reqheight() + 2}+{x}+{y}")
+        self.popup.lift()
+
+    def _highlight(self, index):
+        self.index = index
+        for i, row in enumerate(self.rows):
+            set_bg(row, SAND if i == index else SURFACE)
+
+    def _move(self, step):
+        if self.popup is not None and self.items:
+            self._highlight((self.index + step) % len(self.items))
+        return "break"
+
+    def _on_return(self, event):
+        if self.popup is not None and self.items:
+            self.pick(max(self.index, 0))
+        elif self.search.get():
+            query = self.search.get()
+            self.search.clear()
+            self.app.open_symbol(query)
+        return "break"
+
+    def _on_escape(self, event):
+        self.close()
+        self.search.clear()
+        self.app.focus_set()
+        return "break"
+
+    def pick(self, index):
+        action = self.items[index]["action"]
+        self.close()
+        self.search.clear()
+        self.app.focus_set()
+        action()
+
+    def _close_if_unfocused(self):
+        try:
+            if self.app.focus_get() is not self.search.entry:
+                self.close()
+        except (KeyError, tk.TclError):
+            self.close()
+
+    def close(self):
+        if self.popup is not None:
+            try:
+                self.popup.destroy()
+            except tk.TclError:
+                pass
+            self.popup = None
+        self.index = -1
 
 
 class CriteriaDialog(tk.Toplevel):
@@ -5201,7 +5651,7 @@ class PortfolioPage(Page):
     PERF_RANGES = ["1M", "6M", "YTD", "1Y", "5Y"]
     COLUMNS = [("SYMBOL", 84, 0, "w"), ("NAME", 160, 1, "w"), ("SHARES", 76, 0, "e"), ("AVG COST", 90, 0, "e"),
                ("PRICE", 90, 0, "e"), ("VALUE", 110, 0, "e"), ("TODAY", 104, 0, "e"),
-               ("TOTAL GAIN", 160, 0, "e"), ("WEIGHT", 70, 0, "e"), ("", 70, 0, "e")]
+               ("TOTAL GAIN", 160, 0, "e"), ("WEIGHT", 70, 0, "e"), ("", 110, 0, "e")]
 
     def build(self):
         self.data, self.history, self.alloc_mode, self.perf_range = None, None, "Holdings", "1Y"
@@ -5310,7 +5760,19 @@ class PortfolioPage(Page):
         div.pack(fill="x")
         self.div_box = tk.Frame(div, bg=SURFACE)
         self.div_box.pack(fill="x", padx=S(14), pady=S(8))
+
+        self.sales_section = tk.Frame(wrap, bg=BG)     # shown even when every holding has been sold
+        self.sales_section.pack(fill="x")
+        label(self.sales_section, "Sales History", "h2").pack(anchor="w", pady=(S(28), S(4)))
+        label(self.sales_section, "Shares you've sold and the gain or loss you locked in. “Undo” puts the shares "
+                                  "back into your portfolio.", "small", fg=MUTED).pack(anchor="w", pady=(0, S(10)))
+        sales = card(self.sales_section)
+        sales.pack(fill="x")
+        self.sales_box = tk.Frame(sales, bg=SURFACE)
+        self.sales_box.pack(fill="x", padx=S(14), pady=S(8))
         self.app.portfolio.listeners.append(self._changed)
+        self.app.sales.listeners.append(self._render_sales)
+        self._render_sales()
 
     # --- data -------------------------------------------------------------------------
     def first_load(self):
@@ -5320,10 +5782,70 @@ class PortfolioPage(Page):
     def _toggle_empty(self):
         if self.app.portfolio.items:
             self.empty.pack_forget()
-            self.content.pack(fill="both", expand=True)
+            self.content.pack(fill="both", expand=True, before=self.sales_section)
         else:
             self.content.pack_forget()
-            self.empty.pack(fill="x")
+            self.empty.pack(fill="x", before=self.sales_section)
+
+    def scroll_to_sales(self):
+        self.update_idletasks()
+        inner = self.scroller.inner
+        top = self.sales_section.winfo_rooty() - inner.winfo_rooty()
+        self.scroller.canvas.yview_moveto(max(top - S(20), 0) / max(inner.winfo_height(), 1))
+
+    def _render_sales(self):
+        box = self.sales_box
+        for w in box.winfo_children():
+            w.destroy()
+        sales = sorted(self.app.sales.items, key=lambda x: x["date"], reverse=True)
+        if not sales:
+            label(box, "No sales recorded yet. When you sell shares, use “Sell” on the holding so the gain is kept "
+                       "here.", "body", fg=FAINT).pack(anchor="w", pady=S(14), padx=S(6))
+            return
+        grid = tk.Frame(box, bg=SURFACE)
+        grid.pack(fill="x")
+        heads = [("DATE", "w"), ("SYMBOL", "w"), ("SHARES", "e"), ("SALE PRICE", "e"), ("AVG COST", "e"),
+                 ("PROCEEDS", "e"), ("REALIZED GAIN", "e"), ("", "e")]
+        for c, (h, anchor) in enumerate(heads):
+            grid.columnconfigure(c, weight=1, minsize=S(70))
+            label(grid, h, "eyebrow", fg=FAINT).grid(row=0, column=c, sticky=anchor, padx=S(8), pady=(S(8), S(6)))
+        for r, sale in enumerate(sales, start=1):
+            when = datetime.strptime(sale["date"], "%Y-%m-%d")
+            gain = sale["gain"]
+            gain_text = (f"{fmt_money(gain, signed=True)} ({fmt_pct((sale['price'] / sale['cost'] - 1) * 100)})"
+                         if gain is not None and sale["cost"] else "—")
+            cells = [(short_date(when), "small", MUTED), (sale["symbol"], "body_semi", INK),
+                     (f"{sale['shares']:,g}", "body", INK), (fmt_money(sale["price"]), "body", INK),
+                     (fmt_money(sale["cost"]) if sale["cost"] else "—", "body", MUTED),
+                     (fmt_money(sale["shares"] * sale["price"]), "body", INK),
+                     (gain_text, "body_semi", trend_color(gain))]
+            for c, (text, font, fg) in enumerate(cells):
+                label(grid, text, font, fg=fg).grid(row=r, column=c, sticky=heads[c][1], padx=S(8), pady=S(6))
+            undo = label(grid, "Undo", "small_semi", fg=ACCENT, cursor="hand2")
+            undo.grid(row=r, column=7, sticky="e", padx=S(8))
+            undo.bind("<Button-1>", lambda e, x=sale: self._undo_sale(x))
+        this_year = str(datetime.now().year)
+        year = sum(x["gain"] for x in sales if x["gain"] is not None and x["date"].startswith(this_year))
+        total = sum(x["gain"] for x in sales if x["gain"] is not None)
+        divider(box, pady=(S(6), 0))
+        foot = tk.Frame(box, bg=SURFACE)
+        foot.pack(fill="x", pady=S(8))
+        label(foot, f"Realized in {this_year}: {fmt_money(year, signed=True)}   ·   All time: "
+                    f"{fmt_money(total, signed=True)}", "body_semi", fg=trend_color(year)).pack(side="right", padx=S(8))
+
+    def _undo_sale(self, sale):
+        """Put the sold shares back (combining the average cost if you still hold some)."""
+        current = next((h for h in self.app.portfolio.items if h["symbol"] == sale["symbol"]), None)
+        if current:
+            shares = current["shares"] + sale["shares"]
+            costs = [(current["shares"], current.get("cost")), (sale["shares"], sale["cost"])]
+            known = [(n, c) for n, c in costs if c is not None]
+            cost = sum(n * c for n, c in known) / sum(n for n, _ in known) if known else None
+            self.app.portfolio.set_holding(sale["symbol"], current.get("name", ""), shares, cost)
+        else:
+            self.app.portfolio.set_holding(sale["symbol"], sale.get("name", ""), sale["shares"], sale["cost"])
+        self.app.sales.remove(sale["id"])
+        self.app.set_status(f"Undid the sale of {sale['shares']:g} {sale['symbol']}")
 
     def _changed(self):
         if self.loaded:
@@ -5506,12 +6028,17 @@ class PortfolioPage(Page):
                 label(row, text, font, fg=fg).grid(row=0, column=i, sticky=self.COLUMNS[i][3], padx=S(8), pady=S(11))
             actions = tk.Frame(row, bg=SURFACE)
             actions.grid(row=0, column=9, sticky="e", padx=S(8))
+            sell = label(actions, "Sell", "small_semi", fg=ACCENT, cursor="hand2")
+            sell.pack(side="left", padx=(0, S(12)))
             edit = label(actions, "✎", "body", fg=FAINT, cursor="hand2")
             edit.pack(side="left", padx=(0, S(10)))
             remove = label(actions, "✕", "body", fg=FAINT, cursor="hand2")
             remove.pack(side="left")
+            Tooltip(sell, "Record selling some or all of these shares")
+            Tooltip(remove, "Remove from portfolio without recording a sale")
             make_clickable(row, lambda s=r["symbol"]: self.app.open_symbol(s))
-            for w, cmd in ((edit, lambda h=r: self._edit(h)), (remove, lambda s=r["symbol"]: self.app.portfolio.remove(s))):
+            for w, cmd in ((sell, lambda h=r: SellDialog(self.app, h, h["price"])),
+                           (edit, lambda h=r: self._edit(h)), (remove, lambda s=r["symbol"]: self.app.portfolio.remove(s))):
                 w.unbind("<Button-1>")
                 w.bind("<Button-1>", lambda e, c=cmd: c())
             row.bind("<Enter>", lambda e, s=r["symbol"]: prefetch(s), add="+")
@@ -5824,6 +6351,7 @@ class App(tk.Tk, _DropSupport):
         self.milton = SharedFetch(self.worker, fetch_milton_articles, max_age=30 * 60)
         self.portfolio = PortfolioStore()
         self.alerts = AlertStore()
+        self.sales = SalesStore()
 
         self._build_header()
         self._build_footer()
@@ -5854,6 +6382,8 @@ class App(tk.Tk, _DropSupport):
             self.bind_all(key, lambda e, h=how: self._key(e, lambda: self._scroll_page(h), typing_blocks=True))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(5000, self._check_alerts)
+        self.app_search = AppSearch(self, self.header_search)   # needs the pages, so it's set up last
+        self.bind_all("<Control-k>", lambda e: self._key(e, self.header_search.focus))
         self._enable_drop()
         self.bind("<Configure>", lambda e: e.widget is self and self._close_suggestions())
         set_dark_titlebar(self, THEME == "dark")
@@ -5892,8 +6422,8 @@ class App(tk.Tk, _DropSupport):
         header.pack(fill="x")
         bar = tk.Frame(header, bg=BG)
         bar.pack(fill="x", padx=S(40), pady=S(14))
-        bar.columnconfigure(0, weight=1, uniform="sides")
-        bar.columnconfigure(2, weight=1, uniform="sides")
+        bar.columnconfigure(0, weight=1)
+        bar.columnconfigure(2, weight=1)
 
         # logo — flattened onto the cream background so it blends into the header
         try:
@@ -5922,7 +6452,9 @@ class App(tk.Tk, _DropSupport):
         right = tk.Frame(bar, bg=BG)
         right.grid(row=0, column=2, sticky="e")
         RoundButton(right, "Subscribe", lambda: open_link(SITE_URL), radius=12).pack(side="right")
-        ThemeToggle(right, self.toggle_theme).pack(side="right", padx=(0, S(14)))
+        ThemeToggle(right, self.toggle_theme).pack(side="right", padx=(0, S(12)))
+        self.header_search = SearchEntry(right, "Search stocks, pages, help…   Ctrl+K", width=24)
+        self.header_search.pack(side="right", padx=(0, S(12)))
         divider(header)
 
     def _build_footer(self):

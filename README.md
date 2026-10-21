@@ -1,9 +1,20 @@
-# Insight by Milton — v8 (Portfolio CSV Import)
+# Insight by Milton — v9 (Selling & App Search)
 
 A desktop markets companion for **The Milton Review**, styled after
 [themiltonreview.net](https://www.themiltonreview.net).
 
-## What's new in v8
+## What's new in v9
+
+- **Sell** on any holding — enter shares sold, sale price and date (price and date pre-filled). Shares go
+  down, the average cost stays the same, and the realized gain is saved.
+- **Sales History** on the Portfolio tab — every sale with proceeds and realized gain, totals for this
+  year and all time, and **Undo** to put the shares back.
+- **Search everything (Ctrl+K)** — a search box in the header on every page that finds stocks *and*
+  things inside the app: pages, actions (import/export CSV, dark mode, compare, alerts, shortcuts…),
+  news outlets and topics, your holdings, watchlist, alerts and calendar events, and plain-English
+  explanations (P/E, yield curve, 2s10s, ex-dividend date, CPI…).
+
+## What was new in v8
 
 - **Import CSV** on the Portfolio tab — works with broker position exports (Fidelity, Schwab,
   Vanguard, Robinhood, E*TRADE and others) and simple spreadsheets (`Symbol,Shares,Average Cost`).
