@@ -1,9 +1,19 @@
-# Insight by Milton — v9 (Selling & App Search)
+# Insight by Milton — v10 (Paywall Labels & Better Stock News)
 
 A desktop markets companion for **The Milton Review**, styled after
 [themiltonreview.net](https://www.themiltonreview.net).
 
-## What's new in v9
+## What's new in v10
+
+- **FREE / LIMITED / PAYWALL** tag on every article — on the News page, outlet pages and a stock's
+  Related Financial News. Based on each outlet's policy, refined by checking article pages in the
+  background (e.g. CNBC PRO stories, unfamiliar websites). Hover a tag for what it means.
+- **"Free to read only"** filter on the News page.
+- **Stock headlines fixed** — companies are matched by the names newsrooms use (e.g. "SpaceX" for
+  Space Exploration Technologies, "Google" for Alphabet), and a web news search adds coverage from
+  other financial sites, so stories aren't missed when they've scrolled out of the outlets' feeds.
+
+## What was new in v9
 
 - **Sell** on any holding — enter shares sold, sale price and date (price and date pre-filled). Shares go
   down, the average cost stays the same, and the realized gain is saved.

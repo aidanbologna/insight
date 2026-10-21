@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib import request
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -128,7 +128,7 @@ def set_dark_titlebar(window, dark):
         pass
 
 
-VERSION = "9.0"
+VERSION = "10.0"
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
 BLOG_URL = SITE_URL + "/blog"
@@ -470,7 +470,32 @@ NEWS_SOURCES += [
      "about": "The Daily Signal is a conservative news site launched in 2014 by The Heritage Foundation, a "
               "Washington think tank. The stories shown here come from its economy section."},
 ]
+# Reading access by outlet: free, limited (a few free articles a month) or paywall (subscription).
+OUTLET_ACCESS = {"cnbc": "free", "wsj": "paywall", "marketwatch": "limited", "bloomberg": "paywall",
+                 "ft": "paywall", "economist": "paywall", "bbc": "free", "nyt": "paywall", "guardian": "free",
+                 "npr": "free", "forbes": "limited", "thehill": "free", "foxbusiness": "free", "nypost": "free",
+                 "examiner": "free", "wtimes": "free", "insider": "limited", "cbs": "free", "fortune": "limited",
+                 "quartz": "free", "reason": "free", "ibd": "limited", "breitbart": "free", "signal": "free"}
+for _src in NEWS_SOURCES:
+    _src["access"] = OUTLET_ACCESS.get(_src["id"])
 SOURCES_BY_ID = {src["id"]: src for src in NEWS_SOURCES}
+SOURCE_DOMAINS = {urlparse(src["site"]).netloc.replace("www.", ""): src["id"] for src in NEWS_SOURCES}
+SOURCE_DOMAINS.update({"bbc.co.uk": "bbc", "feeds.bbci.co.uk": "bbc", "markets.businessinsider.com": "insider"})
+# Other websites that show up in a stock's headlines
+DOMAIN_ACCESS = {"barrons.com": "paywall", "washingtonpost.com": "paywall", "theinformation.com": "paywall",
+                 "seekingalpha.com": "limited", "tipranks.com": "limited", "morningstar.com": "limited",
+                 "latimes.com": "limited", "cnn.com": "limited", "theatlantic.com": "paywall",
+                 "kiplinger.com": "limited", "reuters.com": "free", "apnews.com": "free", "axios.com": "free",
+                 "fool.com": "free", "finbold.com": "free", "benzinga.com": "free", "zacks.com": "free",
+                 "thestreet.com": "free", "investopedia.com": "free", "nasdaq.com": "free", "usatoday.com": "free",
+                 "techcrunch.com": "free", "electrek.co": "free", "teslarati.com": "free", "space.com": "free",
+                 "cnet.com": "free", "theverge.com": "limited", "fastcompany.com": "limited",
+                 "investing.com": "free", "gurufocus.com": "limited", "247wallst.com": "free",
+                 "insidermonkey.com": "free", "coindesk.com": "free", "cointelegraph.com": "free",
+                 "abcnews.go.com": "free", "nbcnews.com": "free", "politico.com": "free",
+                 "dailymail.co.uk": "free", "independent.co.uk": "free", "telegraph.co.uk": "paywall",
+                 "thetimes.co.uk": "paywall", "wired.com": "limited", "newsweek.com": "free",
+                 "businesswire.com": "free", "prnewswire.com": "free", "globenewswire.com": "free"}
 
 NEWS_TOPICS = {
     "All": [],
@@ -884,20 +909,217 @@ def newest_first(news):
     return merged
 
 
-def company_pattern(symbol, name):
-    """Regex that finds a company in headlines by its short name or ticker."""
-    aliases = {"GOOGL": "Google|Alphabet", "GOOG": "Google|Alphabet", "META": "Meta|Facebook",
-               "BRK-B": "Berkshire", "BRK-A": "Berkshire"}
+# The names newsrooms actually use, when they differ from the official company name
+BRAND_ALIASES = {
+    "SPCX": ["SpaceX"], "GOOGL": ["Google", "Alphabet"], "GOOG": ["Google", "Alphabet"], "META": ["Meta", "Facebook"],
+    "BRK-B": ["Berkshire Hathaway", "Berkshire"], "BRK-A": ["Berkshire Hathaway", "Berkshire"], "KO": ["Coca-Cola"],
+    "JPM": ["JPMorgan"], "XOM": ["Exxon"], "LLY": ["Eli Lilly", "Lilly"], "UNH": ["UnitedHealth"], "TSM": ["TSMC"],
+    "BABA": ["Alibaba"], "WMT": ["Walmart"], "COST": ["Costco"], "MA": ["Mastercard"], "V": ["Visa"],
+    "PG": ["Procter & Gamble", "P&G"], "JNJ": ["Johnson & Johnson", "J&J"], "HD": ["Home Depot"],
+    "DIS": ["Disney"], "MCD": ["McDonald's"], "NKE": ["Nike"], "SBUX": ["Starbucks"], "F": ["Ford"],
+    "GM": ["General Motors"], "BA": ["Boeing"], "INTC": ["Intel"], "AMD": ["AMD"], "CRM": ["Salesforce"],
+    "ORCL": ["Oracle"], "AVGO": ["Broadcom"], "NFLX": ["Netflix"], "PLTR": ["Palantir"], "UBER": ["Uber"],
+    "ABNB": ["Airbnb"], "PYPL": ["PayPal"], "NVDA": ["Nvidia"], "TSLA": ["Tesla"], "AMZN": ["Amazon"],
+    "AAPL": ["Apple"], "MSFT": ["Microsoft"], "BAC": ["Bank of America"], "WFC": ["Wells Fargo"],
+    "GS": ["Goldman Sachs"], "MS": ["Morgan Stanley"], "C": ["Citigroup", "Citi"], "T": ["AT&T"],
+    "VZ": ["Verizon"], "PEP": ["PepsiCo", "Pepsi"], "CVX": ["Chevron"], "PFE": ["Pfizer"], "MRK": ["Merck"],
+    "ABBV": ["AbbVie"], "BTC-USD": ["Bitcoin"], "ETH-USD": ["Ethereum", "Ether"], "SOL-USD": ["Solana"],
+    "SPY": ["S&P 500"], "VOO": ["S&P 500"], "QQQ": ["Nasdaq 100", "Nasdaq"], "^GSPC": ["S&P 500"],
+    "^DJI": ["Dow Jones", "Dow"], "^IXIC": ["Nasdaq"], "^RUT": ["Russell 2000"], "GC=F": ["gold"],
+    "CL=F": ["oil", "crude"], "COIN": ["Coinbase"], "HOOD": ["Robinhood"], "RIVN": ["Rivian"], "ARM": ["Arm"],
+}
+GENERIC_WORDS = {"the", "first", "american", "america", "united", "general", "international", "global",
+                 "national", "new", "space", "technologies", "technology", "group", "holdings", "financial",
+                 "energy", "bank", "capital", "trust", "fund", "company", "corporation", "industries", "systems",
+                 "solutions", "services", "communications", "pharmaceuticals", "therapeutics", "health", "media",
+                 "entertainment", "resources", "partners", "royal", "china", "north", "south", "west", "east",
+                 "digital", "data", "software", "motors", "airlines", "foods", "spdr", "ishares", "vanguard",
+                 "invesco", "select", "sector", "index", "advanced", "applied", "western", "eastern", "pacific",
+                 "atlantic", "southern", "northern", "consolidated", "universal", "standard", "allied"}
+
+
+def _clean_company(name):
     cleaned = re.sub(r"[,.]|\b(Inc|Incorporated|Corporation|Corp|Company|Co|Ltd|Limited|plc|PLC|Holdings|"
-                     r"Group|N\.?V|S\.?A|AG|SE|Class [A-C]|The)\b", " ", name or "")
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    names = [re.escape(cleaned)] if len(cleaned) >= 3 else []
-    if symbol in aliases:
-        names.append(aliases[symbol])
-    parts = [r"\b(" + "|".join(names) + r")\b"] if names else []
-    words = re.compile("|".join(parts), re.I) if parts else None
-    ticker = re.compile(r"\b" + re.escape(symbol) + r"\b") if len(symbol) >= 3 else None
+                     r"Group|N\.?V|S\.?A|AG|SE|Class [A-C]|The|New|USD|ETF|Trust)\b", " ", name or "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def company_names(symbol, info):
+    """Names a company goes by in headlines: known brand names, its cleaned official names and,
+    when distinctive, the first word (e.g. "Nvidia" from "NVIDIA Corporation")."""
+    names = list(BRAND_ALIASES.get(symbol, []))
+    for raw in (info.get("shortName"), info.get("longName")):
+        cleaned = _clean_company(tidy_name(raw))
+        if len(cleaned) >= 3:
+            names.append(cleaned)
+            first = cleaned.split()[0]
+            if len(first) >= 4 and first.lower() not in GENERIC_WORDS:
+                names.append(first)
+    seen, out = set(), []
+    for n in names:
+        if n.lower() not in seen:
+            seen.add(n.lower())
+            out.append(n)
+    return out
+
+
+def company_matcher(symbol, names):
+    """Function that tells whether a piece of text is about the company (by name or ticker)."""
+    words = re.compile(r"(?<![\w$])(" + "|".join(re.escape(n) for n in names) + r")(?![\w])", re.I) if names else None
+    plain = symbol.lstrip("^").split("-")[0].split("=")[0]
+    ticker = re.compile(r"(?<![\w])\$?" + re.escape(plain) + r"(?![\w])") if len(plain) >= 3 else None
     return lambda text: bool((words and words.search(text)) or (ticker and ticker.search(text)))
+
+
+def _domain(url):
+    return urlparse(url).netloc.lower().replace("www.", "")
+
+
+def fetch_web_news(query, count=30):
+    """News search across the whole web (Bing News), with links straight to each publisher.
+    Yahoo and MSN copies are dropped so every link goes to the original site."""
+    def fetch():
+        url = "https://www.bing.com/news/search?" + urlencode({"q": query, "format": "rss", "count": count})
+        text = http_get(url, timeout=10).decode("utf-8", "ignore")
+        text = re.sub(r'\sxmlns:News="[^"]*"', ' xmlns:News="urn:bing-news"', text)
+        text = re.sub(r"&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)", "&amp;", text)
+        articles = []
+        for item in ET.fromstring(text).iter("item"):
+            link = item.findtext("link") or ""
+            link = parse_qs(urlparse(link).query).get("url", [link])[0]
+            domain = _domain(link)
+            if not link or domain.endswith(("yahoo.com", "msn.com", "bing.com")):
+                continue
+            outlet = next((sid for d, sid in SOURCE_DOMAINS.items() if domain == d or domain.endswith("." + d)), None)
+            source_name = re.sub(r"\s+on MSN$", "", item.findtext("{urn:bing-news}Source") or domain)
+            articles.append({"source": outlet or "web", "source_name": source_name, "rank": 0, "link": link,
+                             "title": _clean(item.findtext("title")), "summary": _clean(item.findtext("description")),
+                             "date": _parse_date(item.findtext("pubDate")), "image": None})
+        return articles
+    return _cached(("web-news", query.lower()), 10 * 60, fetch) or []
+
+
+ACCESS_FILE = os.path.join(DATA_DIR, "article_access.json")
+_ACCESS = None
+_ACCESS_LOCK = threading.Lock()
+_ACCESS_CHECKED = set()
+ACCESS_PAGE_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                                     "Chrome/130.0 Safari/537.36", "Accept-Language": "en-US,en;q=0.9"}
+
+
+def _access_cache():
+    global _ACCESS
+    if _ACCESS is None:
+        try:
+            with open(ACCESS_FILE, "r", encoding="utf-8") as f:
+                _ACCESS = json.load(f)
+        except (OSError, ValueError):
+            _ACCESS = {}
+    return _ACCESS
+
+
+def article_access(article):
+    """free / limited / paywall, or None when unknown. Per-article results win over outlet policy."""
+    link = article["link"]
+    checked = _access_cache().get(link)
+    if checked in ("free", "limited", "paywall"):
+        return checked
+    if "cnbc.com" in link and "/pro/" in link:
+        return "paywall"                      # CNBC PRO stories need a subscription
+    src = SOURCES_BY_ID.get(article["source"])
+    if src:
+        return src["access"]
+    domain = _domain(link)
+    return next((acc for d, acc in DOMAIN_ACCESS.items() if domain == d or domain.endswith("." + d)), None)
+
+
+def needs_access_check(article):
+    link = article["link"]
+    if link in _ACCESS_CHECKED or link in _access_cache():
+        return False
+    src = SOURCES_BY_ID.get(article["source"])
+    if src:   # big paywalled sites block automated checks, so only metered outlets are worth checking
+        return src["access"] == "limited"
+    return article_access(article) is None
+
+
+def check_article_access(articles):
+    """Open each article page and read the paywall marker publishers add for search engines
+    ("isAccessibleForFree" or "article:content_tier"). Results are saved on disk."""
+    def one(article):
+        link = article["link"]
+        _ACCESS_CHECKED.add(link)
+        try:
+            req = request.Request(link, headers=ACCESS_PAGE_HEADERS)
+            with request.urlopen(req, timeout=8) as resp:
+                page = resp.read(600_000).decode("utf-8", "ignore")
+        except Exception:
+            return link, None
+        flag = re.search(r'"isAccessibleForFree"\s*:\s*"?(true|false)', page, re.I)
+        tier = re.search(r'article:content_tier"\s+content="(\w+)"|content="(\w+)"\s+(?:name|property)="article:content_tier',
+                         page, re.I)
+        src = SOURCES_BY_ID.get(article["source"])
+        if flag:
+            if flag.group(1).lower() == "true":
+                return link, "free"
+            return link, src["access"] if src else "paywall"    # metered sites mark everything "not free"
+        if tier:
+            value = (tier.group(1) or tier.group(2)).lower()
+            return link, {"free": "free", "metered": "limited", "locked": "paywall"}.get(value)
+        # Paywalled pages must carry one of the markers above for Google, so a page that opened normally
+        # without one is free to read. (Followed outlets keep their known policy.)
+        return link, None if src else "free"
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = dict(pool.map(one, articles))
+    found = {k: v for k, v in results.items() if v}
+    if found:
+        with _ACCESS_LOCK:
+            cache = _access_cache()
+            cache.update(found)
+            if len(cache) > 4000:            # keep the file small
+                for key in list(cache)[:len(cache) - 4000]:
+                    del cache[key]
+            try:
+                with open(ACCESS_FILE, "w", encoding="utf-8") as f:
+                    json.dump(cache, f)
+            except OSError:
+                pass
+    return results
+
+
+def fetch_stock_news(symbol, info, pool_news):
+    """Finance headlines about one company: the followed outlets first, then a web news search so
+    stories aren't missed just because they've scrolled out of the outlets' latest feeds."""
+    names = company_names(symbol, info)
+    matches = company_matcher(symbol, names)
+    kind = info.get("quoteType")
+    brand = names[0] if names else symbol
+    if kind == "CRYPTOCURRENCY":
+        queries = [f"{brand} price"]
+    elif symbol.startswith("^") or "=" in symbol:
+        queries = [brand]
+    else:
+        queries = [f"{brand} stock"]
+        plain = symbol.split("-")[0]
+        if len(plain) >= 3 and plain.lower() != brand.lower():
+            queries.append(f"{plain} stock")
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+        web = [a for batch in pool.map(lambda q: _safe(fetch_web_news, q), queries) for a in batch]
+    cutoff = datetime.now(timezone.utc) - timedelta(days=45)
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    found, seen = [], set()
+    for art in newest_first(pool_news) + sorted(web, key=lambda a: a["date"] or oldest, reverse=True):
+        text = art["title"] + " " + art["summary"]
+        key = re.sub(r"[^a-z0-9]", "", art["title"].lower())[:60]
+        if key in seen or not matches(text) or not FINANCE_PATTERN.search(text):
+            continue
+        if art["date"] and art["date"] < cutoff:
+            continue
+        seen.add(key)
+        found.append(art)
+    found.sort(key=lambda a: a["date"] or oldest, reverse=True)
+    return {"articles": found[:10], "names": names}
 
 
 def fetch_quotes(symbols):
@@ -2738,6 +2960,42 @@ class BiasScale(tk.Canvas):
                     self.create_polygon(cx - S(7), S(4), cx + S(7), S(4), cx, S(15), fill=INK, outline=INK)
 
 
+def access_style(status):
+    return {"free": ("FREE", UP, UP_SOFT, "Free to read"),
+            "limited": ("LIMITED", FAIR, FAIR_SOFT, "A few free articles a month, then a subscription"),
+            "paywall": ("PAYWALL", DOWN, DOWN_SOFT, "Subscription required")}.get(status)
+
+
+class AccessPill(tk.Frame):
+    """FREE / LIMITED / PAYWALL tag. Empty while unknown; can be updated after a check."""
+
+    def __init__(self, parent, status=None):
+        super().__init__(parent, bg=parent.cget("bg"))
+        self.keep_bg = True
+        self.pill, self.tip = None, None
+        self.set(status)
+
+    def set(self, status):
+        style = access_style(status)
+        if self.pill is not None:
+            self.pill.destroy()
+            self.pill = None
+        if not style:
+            return
+        word, fg, soft, meaning = style
+        self.pill = label(self, word, "eyebrow", fg=fg, bg=soft, padx=S(6), pady=S(1))
+        self.pill.keep_bg = True
+        self.pill.pack()
+        Tooltip(self.pill, meaning)
+
+
+def web_badge(parent, name):
+    initials = "".join(w[0] for w in re.findall(r"[A-Za-z0-9]+", name)[:3]).upper() or "?"
+    badge = label(parent, initials, "eyebrow", fg="#FFFFFF", bg=FAINT, padx=S(5), pady=S(1), width=5)
+    badge.keep_bg = True
+    return badge
+
+
 class HeadlineRow(tk.Frame):
     """Text-only headline: source badge, outlet, bias, time, title and summary.
     Clicking the headline opens the article on the publisher's site; clicking the outlet opens
@@ -2746,13 +3004,14 @@ class HeadlineRow(tk.Frame):
     def __init__(self, parent, app, article, bg=None, summary=True, show_source=True):
         bg = bg or BG
         super().__init__(parent, bg=bg)
-        src = SOURCES_BY_ID[article["source"]]
+        self.article = article
+        src = SOURCES_BY_ID.get(article["source"])      # None for websites outside the 24 followed outlets
         inner = tk.Frame(self, bg=bg)
         inner.pack(fill="x", padx=S(8), pady=S(11))
         meta = tk.Frame(inner, bg=bg)
         meta.pack(fill="x")
         source_links = []
-        if show_source:
+        if show_source and src:
             badge = source_badge(meta, src)
             badge.pack(side="left", padx=(0, S(8)))
             name = label(meta, src["name"], "small_semi")
@@ -2760,7 +3019,13 @@ class HeadlineRow(tk.Frame):
             label(meta, f"  {src['bias']}", "small", fg=bias_text_color(src["bias"])).pack(side="left")
             label(meta, "  ·  ", "small", fg=FAINT).pack(side="left")
             source_links = [badge, name]
+        elif show_source:
+            web_badge(meta, article.get("source_name", "")).pack(side="left", padx=(0, S(8)))
+            label(meta, article.get("source_name", ""), "small_semi").pack(side="left")
+            label(meta, "  ·  ", "small", fg=FAINT).pack(side="left")
         label(meta, time_ago(article["date"]) if article["date"] else "", "small", fg=FAINT).pack(side="left")
+        self.access = AccessPill(meta, article_access(article))
+        self.access.pack(side="left", padx=(S(10), 0))
         visited = article["link"] in app.visited
         title = wrap_label(inner, article["title"], "card_title", fg=MUTED if visited else INK)
         title.pack(fill="x", pady=(S(4), 0))
@@ -2781,6 +3046,12 @@ class HeadlineRow(tk.Frame):
             w.unbind("<Button-1>")
             w.bind("<Button-1>", lambda e: app.show_source(src["id"]))
         add_hover(self, lambda: set_bg(self, SAND), lambda: set_bg(self, bg))
+
+    def refresh_access(self):
+        try:
+            self.access.set(article_access(self.article))
+        except tk.TclError:
+            pass
 
 
 class ShortcutsDialog(tk.Toplevel):
@@ -3240,6 +3511,9 @@ class AppSearch:
             add("NEWS", src["name"], lambda i=src["id"]: app.show_source(i), f"News outlet · {src['bias']}",
                 f"{src['short']} {src['id']} outlet source")
         news = app.pages["News"]
+        add("ACTIONS", "Free articles only", lambda: (app.navigate("News"), news.free_chip.set({"Free to read only"}),
+                                                     news._toggle_free({"Free to read only"})),
+            "Hide paywalled news", "paywall free subscription")
         for topic in NEWS_TOPICS:
             if topic != "All":
                 add("NEWS", f"{topic} news", lambda t=topic: (app.navigate("News"), news.topics.set(t), news.set_topic(t)),
@@ -4707,31 +4981,36 @@ class MarketsPage(Page):
               "small", fg=FAINT).pack(side="right")
 
     def _fill_news(self, symbol, info):
-        """Headlines that mention this company, taken from the followed news outlets."""
+        """Finance headlines about this company from the followed outlets and the wider web."""
         for w in self.news_box.winfo_children():
             w.destroy()
-        name = info.get("shortName") or info.get("longName") or ""
-        if info.get("quoteType") not in ("EQUITY", "ETF"):
-            name = name if info.get("quoteType") != "CRYPTOCURRENCY" else name.split(" ")[0]
-        matches = company_pattern(symbol, name)
         show_skeleton(self.news_box, blocks=2, lines=2)
 
-        def show(news):
+        def search(pool):
+            self.app.worker.run(lambda: fetch_stock_news(symbol, info, pool), show,
+                                lambda e: show({"articles": [], "names": []}))
+
+        def show(result):
             if not self.data or self.data["symbol"] != symbol:
                 return
             for w in self.news_box.winfo_children():
                 w.destroy()
-            found = [a for a in newest_first(news)
-                     if matches(a["title"] + " " + a["summary"])
-                     and FINANCE_PATTERN.search(a["title"] + " " + a["summary"])][:6]
-            if not found:
-                label(self.news_box, f"None of the {len(NEWS_SOURCES)} followed outlets have finance stories "
-                                     f"about {name or symbol} in their latest headlines.", "body",
+            articles = result["articles"]
+            if not articles:
+                who = result["names"][0] if result["names"] else symbol
+                label(self.news_box, f"No recent finance stories about {who} were found.", "body",
                       fg=FAINT).pack(anchor="w")
-            for art in found:
-                HeadlineRow(self.news_box, self.app, art).pack(fill="x")
+                return
+            rows = [HeadlineRow(self.news_box, self.app, art) for art in articles]
+            for r in rows:
+                r.pack(fill="x")
+            ours = sum(1 for a in articles if a["source"] in SOURCES_BY_ID)
+            label(self.news_box, f"{ours} from the {len(NEWS_SOURCES)} followed outlets (with bias ratings) · "
+                                 f"{len(articles) - ours} from other websites · finance stories only", "small",
+                  fg=FAINT).pack(anchor="w", pady=(S(8), 0))
+            self.app.check_access(rows)
 
-        self.app.news.get(show, lambda e: None)
+        self.app.news.get(search, lambda e: search({}))
 
     # --- chart ------------------------------------------------------------------
     def _chart_message(self, text):
@@ -4883,8 +5162,14 @@ class NewsPage(Page):
         self.search.pack(side="left")
         self.search.entry.bind("<KeyRelease>", lambda e: self._schedule_filter(), add="+")
 
-        self.topics = ChipGroup(wrap, list(NEWS_TOPICS), self.set_topic, value="All")
-        self.topics.pack(anchor="w", pady=(0, S(20)))
+        filters = tk.Frame(wrap, bg=BG)
+        filters.pack(fill="x", pady=(0, S(20)))
+        self.topics = ChipGroup(filters, list(NEWS_TOPICS), self.set_topic, value="All")
+        self.topics.pack(side="left")
+        self.free_only = False
+        self.free_chip = ChipGroup(filters, ["Free to read only"], self._toggle_free, multi=True)
+        self.free_chip.pack(side="left", padx=(S(18), 0))
+        Tooltip(self.free_chip, "Hide paywalled and limited articles")
 
         cols = tk.Frame(wrap, bg=BG)
         cols.pack(fill="both", expand=True)
@@ -4996,11 +5281,17 @@ class NewsPage(Page):
         self.limit += self.PAGE_SIZE
         self._render(keep_scroll=True)
 
+    def _toggle_free(self, selected):
+        self.free_only, self.limit = bool(selected), self.PAGE_SIZE
+        self._render()
+
     def _filtered(self):
         pattern = TOPIC_PATTERNS.get(self.topic)
         words = self.query.split()
         out = []
         for art in self.articles:
+            if self.free_only and article_access(art) != "free":
+                continue
             text = f"{art['title']} {art['summary']}"
             if pattern and not pattern.search(text):
                 continue
@@ -5022,8 +5313,10 @@ class NewsPage(Page):
         self.count_label.configure(text=f"Showing {len(shown)} of {len(items)}")
         if not items:
             label(self.list, "No headlines match right now.", "body", fg=FAINT).pack(anchor="w", pady=S(12))
-        for art in shown:
-            HeadlineRow(self.list, self.app, art).pack(fill="x")
+        rows = [HeadlineRow(self.list, self.app, art) for art in shown]
+        for r in rows:
+            r.pack(fill="x")
+        self.app.check_access(rows)
         if len(items) > self.limit:
             self.more.pack(anchor="w", pady=(S(16), 0))
         else:
@@ -5069,6 +5362,10 @@ class SourcePage(Page):
                      fg=ACCENT)
         site.pack(anchor="w")
         make_clickable(site, lambda: open_link(src["site"]))
+        access = tk.Frame(names, bg=BG)
+        access.pack(anchor="w", pady=(S(6), 0))
+        AccessPill(access, src["access"]).pack(side="left")
+        label(access, "  " + access_style(src["access"])[3], "small", fg=MUTED).pack(side="left")
 
         cols = tk.Frame(self.content, bg=BG)
         cols.pack(fill="x")
@@ -5137,7 +5434,10 @@ class SourcePage(Page):
                 thumbs.append((thumb, art["image"]))
             box = tk.Frame(c, bg=SURFACE)
             box.pack(fill="both", expand=True, padx=S(18), pady=S(14))
-            label(box, time_ago(art["date"]) if art["date"] else "", "small", fg=FAINT).pack(anchor="w")
+            top_line = tk.Frame(box, bg=SURFACE)
+            top_line.pack(fill="x")
+            label(top_line, time_ago(art["date"]) if art["date"] else "", "small", fg=FAINT).pack(side="left")
+            AccessPill(top_line, article_access(art)).pack(side="left", padx=(S(10), 0))
             wrap_label(box, art["title"], "card_title").pack(fill="x", pady=(S(2), S(4)))
             if art["summary"]:
                 text = art["summary"]
@@ -6570,6 +6870,16 @@ class App(tk.Tk, _DropSupport):
             scroller.canvas.yview_scroll(how[1], how[2])
         else:
             scroller.canvas.yview_moveto(how[1])
+
+    # --- free / paywall checks ------------------------------------------------------------
+    def check_access(self, rows):
+        """Check article pages in the background and update their FREE / LIMITED / PAYWALL tags."""
+        todo = [r for r in rows if needs_access_check(r.article)]
+        if not todo:
+            return
+        articles = [r.article for r in todo]
+        self.worker.run(lambda: check_article_access(articles),
+                        lambda _results: [r.refresh_access() for r in todo], lambda e: None)
 
     # --- drag & drop ---------------------------------------------------------------------
     def _enable_drop(self):
