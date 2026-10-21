@@ -1088,7 +1088,7 @@ def check_article_access(articles):
     return results
 
 
-def fetch_stock_news(symbol, info, pool_news):
+def fetch_stock_news(symbol, info, pool_news, limit=10):
     """Finance headlines about one company: the followed outlets first, then a web news search so
     stories aren't missed just because they've scrolled out of the outlets' latest feeds."""
     names = company_names(symbol, info)
@@ -1119,7 +1119,7 @@ def fetch_stock_news(symbol, info, pool_news):
         seen.add(key)
         found.append(art)
     found.sort(key=lambda a: a["date"] or oldest, reverse=True)
-    return {"articles": found[:10], "names": names}
+    return {"articles": found[:limit], "names": names}
 
 
 def fetch_quotes(symbols):
@@ -1332,7 +1332,8 @@ def fetch_earnings(symbol):
                     "eps": float(row["Reported EPS"]),
                     "estimate": None if pd.isna(row["EPS Estimate"]) else float(row["EPS Estimate"]),
                     "surprise": None if pd.isna(row["Surprise(%)"]) else float(row["Surprise(%)"]),
-                    "revenue": None, "revenue_growth": None, "quarter": None}
+                    "revenue": None, "revenue_growth": None, "quarter": None,
+                    "net_income": None, "net_income_prev": None, "reaction": None}
             try:   # revenue for the quarter that was reported, and the same quarter a year earlier
                 with _INFO_SLOTS:
                     stmt = t.quarterly_income_stmt
@@ -1349,8 +1350,15 @@ def fetch_earnings(symbol):
                         year_ago = [d for d in revenue.index if abs((end - d).days - 365) <= 20]
                         if year_ago and revenue[year_ago[0]]:
                             last["revenue_growth"] = (last["revenue"] / float(revenue[year_ago[0]]) - 1) * 100
+                        if "Net Income" in stmt.index:
+                            profit = stmt.loc["Net Income"]
+                            if not pd.isna(profit.get(end)):
+                                last["net_income"] = float(profit[end])
+                            if year_ago and not pd.isna(profit.get(year_ago[0])):
+                                last["net_income_prev"] = float(profit[year_ago[0]])
             except Exception:
                 pass
+            last["reaction"] = _earnings_reaction(symbol, when, last["timing"])
             result["last"] = last
             for when, row in reported.iloc[-4:].iterrows():
                 surprise = row["Surprise(%)"]
@@ -1366,6 +1374,89 @@ def fetch_earnings(symbol):
                               "estimate": None if pd.isna(estimate) else float(estimate)}
         return result
     return _cached(("earnings", symbol), 6 * 3600, fetch)
+
+
+def _earnings_reaction(symbol, when, timing):
+    """How the stock moved on the first trading day after the report: (percent, label) or None."""
+    try:
+        hist = _download_history(symbol, "10y", "1d")
+        if hist.empty:
+            return None
+        close = hist["Close"]
+        days = [d.date() for d in close.index]
+        report = (when.tz_convert(EASTERN) if EASTERN and when.tzinfo else when).date()
+        if timing == "after the market closes":     # reaction shows up the next morning
+            before = [i for i, d in enumerate(days) if d <= report]
+            after = [i for i, d in enumerate(days) if d > report]
+            label_text = "the next trading day"
+        else:                                         # reported before or during the session
+            before = [i for i, d in enumerate(days) if d < report]
+            after = [i for i, d in enumerate(days) if d >= report]
+            label_text = "on the day of the report"
+        if not before or not after:
+            return None
+        return (float(close.iloc[after[0]]) / float(close.iloc[before[-1]]) - 1) * 100, label_text
+    except Exception:
+        return None
+
+
+def earnings_summary(company, last):
+    """A short plain-English summary of the last earnings report, written from the numbers."""
+    word, _ = beat_word(last["surprise"])
+    verb = {"Beat": "beat expectations", "Missed": "fell short of expectations",
+            "In line": "came in line with expectations"}.get(word, "reported results")
+    quarter = last.get("quarter")
+    period = ("for the quarter ended " + quarter.strftime("%B %d").replace(" 0", " ")) if quarter else "for its latest quarter"
+
+    def per_share(v):
+        return f"${v:.2f} a share" if v >= 0 else f"a loss of ${abs(v):.2f} a share"
+
+    eps, est = last["eps"], last["estimate"]
+    if est is not None:
+        compare = {"Beat": "topping", "Missed": "short of"}.get(word, "matching")
+        expected = f"${est:.2f}" if est >= 0 else f"a ${abs(est):.2f} loss"
+        eps_part = f"{'earnings of ' if eps >= 0 else ''}{per_share(eps)}, {compare} the {expected} analysts expected"
+    else:
+        eps_part = f"{'earnings of ' if eps >= 0 else ''}{per_share(eps)}"
+    first = f"{company} {verb} {period}, with {eps_part}"
+    revenue, growth = last.get("revenue"), last.get("revenue_growth")
+    if revenue and growth is not None:
+        first += f". Revenue {'rose' if growth >= 0 else 'fell'} {abs(growth):.1f}% from a year earlier to ${fmt_big(revenue)}"
+    elif revenue:
+        first += f", on revenue of ${fmt_big(revenue)}"
+    sentences = [first + "."]
+
+    profit, before = last.get("net_income"), last.get("net_income_prev")
+    if profit is not None:
+        if profit >= 0:
+            text = f"Profit was ${fmt_big(profit)}"
+            if before and before > 0:
+                change = (profit / before - 1) * 100
+                text += f", {'up' if change >= 0 else 'down'} {abs(change):.0f}% from a year ago"
+            elif before is not None and before < 0:
+                text += ", turning around a loss a year ago"
+            if revenue:
+                text += f" (a {profit / revenue * 100:.0f}% profit margin)"
+        else:
+            text = f"It posted a net loss of ${fmt_big(-profit)}"
+            if before is not None and before < 0:
+                text += f", {'narrower' if -profit < -before else 'wider'} than the ${fmt_big(-before)} loss a year ago"
+            elif before is not None and before > 0:
+                text += ", after a profit a year ago"
+        sentences.append(text + ".")
+
+    reaction = last.get("reaction")
+    if reaction:
+        move, when = reaction
+        if abs(move) < 0.1:
+            sentences.append(f"The stock was little changed {when}.")
+        else:
+            sentences.append(f"The stock {'rose' if move > 0 else 'fell'} {abs(move):.1f}% {when}.")
+    return " ".join(sentences)
+
+
+EARNINGS_NEWS = re.compile(r"\b(earnings|results|quarter|quarterly|q[1-4]|revenue|profit|eps|guidance|beat|beats|"
+                           r"miss|misses|sales|outlook)\b", re.I)
 
 
 def beat_word(surprise):
@@ -5015,6 +5106,18 @@ class MarketsPage(Page):
                     line.pack(fill="x", pady=S(1))
                     label(line, name, "small", fg=MUTED, width=8, anchor="w").pack(side="left")
                     label(line, value, "small").pack(side="left")
+                names = company_names(sym, info)
+                summary = tk.Frame(box, bg=SAND)
+                summary.pack(fill="x", pady=(S(10), 0))
+                sbox = tk.Frame(summary, bg=SAND)
+                sbox.pack(fill="x", padx=S(12), pady=S(10))
+                label(sbox, "SUMMARY", "eyebrow", fg=ACCENT, bg=SAND).pack(anchor="w")
+                # fixed wrap width: a long line would otherwise widen the whole sidebar
+                label(sbox, earnings_summary(names[0] if names else sym, last), "small", bg=SAND, justify="left",
+                      anchor="w", wraplength=S(290)).pack(fill="x", pady=(S(3), 0))
+                self.earnings_news = tk.Frame(sbox, bg=SAND)
+                self.earnings_news.pack(fill="x")
+                self._earnings_coverage(sym, info, last["date"])
             if result["record"]:
                 record = tk.Frame(box, bg=SURFACE)
                 record.pack(fill="x", pady=(S(8), 0))
@@ -5040,6 +5143,45 @@ class MarketsPage(Page):
                 self.earnings_card.pack_forget()
 
         self.app.worker.run(lambda: fetch_earnings(sym), show, failed)
+
+    def _earnings_coverage(self, sym, info, report_date):
+        """Add a link to a news story about the report, when one of the headlines covers it."""
+        window = (report_date - timedelta(days=1), report_date + timedelta(days=5))   # coverage of the report itself
+        names = company_names(sym, info)
+        lead = re.compile(r"(?<![\w$])(" + "|".join(re.escape(n) for n in names + [sym]) + r")(?![\w])", re.I)
+
+        def about_company(title):
+            """The headline should be about this company: its name near the start, not a passing mention."""
+            found = lead.search(title)
+            return bool(found) and found.start() <= 40
+
+        def pick(result):
+            if not self.data or self.data["symbol"] != sym:
+                return
+            candidates = [a for a in result["articles"]
+                          if a["date"] and window[0] <= a["date"] <= window[1] and EARNINGS_NEWS.search(a["title"])
+                          and about_company(a["title"])]
+            if not candidates:
+                return
+            order = {"free": 0, None: 1, "limited": 2, "paywall": 3}     # prefer a story anyone can read
+            art = min(candidates, key=lambda a: order.get(article_access(a), 1))
+            try:
+                holder = self.earnings_news
+                label(holder, "READ MORE", "eyebrow", fg=FAINT, bg=SAND).pack(anchor="w", pady=(S(8), S(1)))
+                title = label(holder, art["title"], "small_semi", fg=ACCENT, bg=SAND, cursor="hand2", justify="left",
+                              anchor="w", wraplength=S(290))
+                title.pack(fill="x")
+                meta = tk.Frame(holder, bg=SAND)
+                meta.pack(fill="x", pady=(S(2), 0))
+                src = SOURCES_BY_ID.get(art["source"])
+                label(meta, src["name"] if src else art.get("source_name", ""), "small", fg=MUTED, bg=SAND).pack(side="left")
+                AccessPill(meta, article_access(art)).pack(side="left", padx=(S(8), 0))
+                title.bind("<Button-1>", lambda e: (self.app.visited.add(art["link"]), open_link(art["link"])))
+            except tk.TclError:
+                pass
+
+        self.app.news.get(lambda pool: self.app.worker.run(lambda: fetch_stock_news(sym, info, pool, limit=60), pick,
+                                                           lambda e: None), lambda e: None)
 
     def _fill_panels(self, sym, info):
         """Statistics, fundamentals, profile and news — everything under and beside the chart."""
