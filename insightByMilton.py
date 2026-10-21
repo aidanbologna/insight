@@ -10,6 +10,7 @@ import html
 import importlib
 import io
 import json
+import math
 import os
 import queue
 import random
@@ -23,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib import request
+from urllib.parse import quote
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -48,29 +50,84 @@ except Exception:  # tzdata missing — fall back to local time
 # -----------------------------------------------------------------------------
 # 1. Brand: colours, links and copy borrowed from themiltonreview.net
 # -----------------------------------------------------------------------------
-BG = "#FDFBF7"           # page cream
-SURFACE = "#FFFFFF"      # cards
-SAND = "#F3EFE7"         # newsletter band / soft fills
-BORDER = "#E6E0D6"       # hairlines
-INK = "#1C1C1C"          # text
-MUTED = "#595959"        # secondary text
-FAINT = "#8C877F"        # tertiary text
-ACCENT = "#D47A5D"       # Milton terracotta
-ACCENT_DARK = "#B9603F"
-ACCENT_SOFT = "#F7E6DF"
-UP = "#2F7D4F"
-UP_SOFT = "#E4F0E7"
-DOWN = "#B4473A"
-DOWN_SOFT = "#F6E2DE"
-FAIR = "#A0721A"         # amber "yellow" that stays readable on cream
-FAIR_SOFT = "#F8EDD3"
-RATING_STYLE = {          # rating -> (text colour, pill colour, word)
-    "good": (UP, UP_SOFT, "Good"),
-    "fair": (FAIR, FAIR_SOFT, "Fair"),
-    "weak": (DOWN, DOWN_SOFT, "Weak"),
-    None: (FAINT, SAND, "Not rated"),
+THEMES = {
+    "light": {
+        "BG": "#FDFBF7",          # page cream
+        "SURFACE": "#FFFFFF",     # cards
+        "SAND": "#F3EFE7",        # soft panels
+        "BORDER": "#E6E0D6",      # hairlines
+        "INK": "#1C1C1C",         # text
+        "MUTED": "#595959",       # secondary text
+        "FAINT": "#8C877F",       # tertiary text
+        "ACCENT": "#D47A5D",      # Milton terracotta
+        "ACCENT_DARK": "#B9603F",
+        "ACCENT_SOFT": "#F7E6DF",
+        "UP": "#2F7D4F", "UP_SOFT": "#E4F0E7",
+        "DOWN": "#B4473A", "DOWN_SOFT": "#F6E2DE",
+        "FAIR": "#A0721A", "FAIR_SOFT": "#F8EDD3",   # amber "yellow" that stays readable
+    },
+    "dark": {
+        "BG": "#161513",
+        "SURFACE": "#201E1B",
+        "SAND": "#2A2723",
+        "BORDER": "#3A3631",
+        "INK": "#EEE9E1",
+        "MUTED": "#B5AEA4",
+        "FAINT": "#8B857C",
+        "ACCENT": "#E28C6D",
+        "ACCENT_DARK": "#C9714F",
+        "ACCENT_SOFT": "#3D2A22",
+        "UP": "#5DBB82", "UP_SOFT": "#1D3427",
+        "DOWN": "#E37C6E", "DOWN_SOFT": "#3D2420",
+        "FAIR": "#D9AE52", "FAIR_SOFT": "#3A3020",
+    },
 }
+THEME = "light"
+COLOR_NAMES = ("BG", "SURFACE", "SAND", "BORDER", "INK", "MUTED", "FAINT", "ACCENT", "ACCENT_DARK",
+               "ACCENT_SOFT", "UP", "UP_SOFT", "DOWN", "DOWN_SOFT", "FAIR", "FAIR_SOFT")
+(BG, SURFACE, SAND, BORDER, INK, MUTED, FAINT, ACCENT, ACCENT_DARK, ACCENT_SOFT,
+ UP, UP_SOFT, DOWN, DOWN_SOFT, FAIR, FAIR_SOFT) = (THEMES["light"][name] for name in COLOR_NAMES)
+RATING_STYLE = {}         # rating -> (text colour, pill colour, word), filled by apply_theme()
 
+
+def apply_theme(name):
+    """Switch every colour constant. Called before the window's widgets are built."""
+    global THEME, _LOGO
+    THEME = name if name in THEMES else "light"
+    globals().update(THEMES[THEME])
+    RATING_STYLE.clear()
+    RATING_STYLE.update({"good": (UP, UP_SOFT, "Good"), "fair": (FAIR, FAIR_SOFT, "Fair"),
+                         "weak": (DOWN, DOWN_SOFT, "Weak"), None: (FAINT, SAND, "Not rated")})
+    if "INDEX_COLORS" in globals():
+        INDEX_COLORS[:2] = [INK, ACCENT]
+    _LOGO = None
+
+
+def windows_prefers_dark():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+    except Exception:
+        return False
+
+
+def set_dark_titlebar(window, dark):
+    """Ask Windows 10/11 to draw a dark title bar to match dark mode."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if dark else 0)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        pass
+
+
+VERSION = "7.0"
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
 BLOG_URL = SITE_URL + "/blog"
@@ -445,6 +502,8 @@ FINANCE_PATTERN = re.compile(
 # Markets overview
 INDEXES = [("S&P 500", "^GSPC"), ("Dow Jones", "^DJI"), ("Nasdaq", "^IXIC"), ("Russell 2000", "^RUT")]
 INDEX_COLORS = [INK, ACCENT, "#5B7FA6", "#7E9B6A"]
+_LOGO = None
+apply_theme("light")
 SECTORS = [("Technology", "XLK"), ("Financials", "XLF"), ("Health Care", "XLV"),
            ("Consumer Discretionary", "XLY"), ("Communication Services", "XLC"), ("Industrials", "XLI"),
            ("Consumer Staples", "XLP"), ("Energy", "XLE"), ("Utilities", "XLU"),
@@ -512,6 +571,8 @@ DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "I
 os.makedirs(DATA_DIR, exist_ok=True)
 WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+PORTFOLIO_FILE = os.path.join(DATA_DIR, "portfolio.json")
+ALERTS_FILE = os.path.join(DATA_DIR, "alerts.json")
 TREASURY_CACHE = os.path.join(DATA_DIR, "treasury_cache.csv")
 
 
@@ -548,6 +609,13 @@ def fmt_big(v):
 
 def fmt_pct(v):
     return "—" if is_missing(v) else f"{v:+.2f}%"
+
+
+def fmt_money(v, signed=False, decimals=2):
+    if is_missing(v):
+        return "—"
+    sign = ("+" if v > 0 else "-" if v < 0 else "") if signed else ("-" if v < 0 else "")
+    return f"{sign}${abs(v):,.{decimals}f}"
 
 
 def fmt_change(v):
@@ -938,16 +1006,37 @@ def fetch_history(symbol, range_key):
     return hist
 
 
+_INFO_SLOTS = threading.Semaphore(4)   # too many lookups at once makes Yahoo reject the session ("Invalid Crumb")
+
+
 def fetch_info(symbol):
-    return _cached(("info", symbol), 5 * 60, lambda: _fetch_info(symbol))
+    """Company details, cached for 5 minutes. Incomplete answers are retried and never cached."""
+    with _CACHE_LOCK:
+        hit = _CACHE.get(("info", symbol))
+    if hit and time.time() - hit[0] < 5 * 60:
+        return hit[1]
+    info, complete = _fetch_info(symbol)
+    if complete:
+        with _CACHE_LOCK:
+            _CACHE[("info", symbol)] = (time.time(), info)
+    return info
 
 
 def _fetch_info(symbol):
     t = yf.Ticker(symbol)
-    try:
-        info = dict(t.info or {})
-    except Exception:
-        info = {}
+    info, complete = {}, False
+    for attempt in range(3):
+        try:
+            with _INFO_SLOTS:
+                info = dict(t.info or {})
+            # after a rejected session yfinance quietly returns a cut-down record (no sector, no margins)
+            complete = bool(info.get("quoteType")) and (info.get("quoteType") != "EQUITY" or
+                                                        "sector" in info or "profitMargins" in info)
+            if complete:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5 * (attempt + 1))
     if is_missing(info.get("regularMarketPrice")) or is_missing(info.get("regularMarketPreviousClose")):
         try:
             fast = t.fast_info
@@ -955,7 +1044,7 @@ def _fetch_info(symbol):
             info.setdefault("regularMarketPreviousClose", fast.previous_close)
         except Exception:
             pass
-    return info
+    return info, complete
 
 
 def load_symbol(query, range_key):
@@ -1025,6 +1114,194 @@ def fetch_treasury():
 # -----------------------------------------------------------------------------
 # 5. Background worker — runs slow calls off the UI thread
 # -----------------------------------------------------------------------------
+# --- portfolio ---------------------------------------------------------------------
+def fetch_portfolio(symbols):
+    """Live quotes plus company details (sector, dividend) for every holding."""
+    quotes = fetch_quotes(symbols)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        infos = dict(zip(symbols, pool.map(fetch_info, symbols)))
+    return {"quotes": quotes, "infos": infos}
+
+
+def fetch_portfolio_history(symbols):
+    """Five years of daily closes for the holdings and the S&P 500."""
+    def fetch():
+        with YF_LOCK:
+            df = yf.download(list(symbols) + ["^GSPC"], period="5y", interval="1d", auto_adjust=True,
+                             progress=False, threads=True)
+        close = df["Close"] if isinstance(df.columns, pd.MultiIndex) else df[["Close"]]
+        return close.ffill()
+    return _cached(("portfolio-history", tuple(sorted(symbols))), 15 * 60, fetch)
+
+
+# --- calendar ------------------------------------------------------------------------
+FED_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+BEA_URL = "https://www.bea.gov/news/schedule"
+CENSUS_URL = "https://www.census.gov/economic-indicators/calendar-listview.html"
+BLS_URL = "https://www.bls.gov/schedule/news_release/{}.htm"
+BLS_HEADERS = {"User-Agent": "InsightByMilton/7.0 (+https://www.themiltonreview.net)"}   # BLS asks apps to identify themselves
+
+
+def _table_rows(page):
+    return [re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", row))).strip()
+            for row in re.findall(r"<tr[^>]*>(.*?)</tr>", page, re.S)]
+
+
+def _parse_day(text, *formats):
+    text = text.replace("Sept", "Sep").replace(".", "").strip()
+    for fmt in formats or ("%b %d, %Y", "%B %d, %Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def fetch_fed_meetings():
+    page = http_get(FED_URL).decode("utf-8", "ignore")
+    parts = re.split(r"(\d{4}) FOMC Meetings", page)
+    events = []
+    for i in range(1, len(parts), 2):
+        year = parts[i]
+        for month, days in re.findall(r"fomc-meeting__month[^>]*>\s*<strong>([^<]+)</strong>.*?"
+                                      r"fomc-meeting__date[^>]*>([^<]+)<", parts[i + 1], re.S):
+            if not re.match(r"^\d", days.strip()) or "notation" in days or "unscheduled" in days.lower():
+                continue
+            projections = "*" in days
+            days = days.replace("*", "").strip()
+            date = _parse_day(f"{month.split('/')[-1]} {days.split('-')[-1]}, {year}", "%B %d, %Y", "%b %d, %Y")
+            if date:
+                events.append({"type": "fed", "date": date, "time": "2:00 PM ET",
+                               "title": "Fed interest-rate decision",
+                               "detail": f"FOMC meeting {month} {days}"
+                                         + (" · with new economic projections" if projections else "")})
+    return events
+
+
+def fetch_bls(series):
+    names = {"cpi": ("Consumer Price Index (CPI)", "Inflation for {}"),
+             "empsit": ("Jobs report (Employment Situation)", "Hiring and unemployment for {}")}
+    title, detail = names[series]
+    req = request.Request(BLS_URL.format(series), headers=BLS_HEADERS)
+    with request.urlopen(req, timeout=15) as resp:
+        page = resp.read().decode("utf-8", "ignore")
+    events = []
+    for row in _table_rows(page):
+        m = re.match(r"^([A-Z][a-z]+ \d{4}) ([A-Z][a-z]{2,4}\.? \d{1,2}, \d{4}) (\d{1,2}:\d{2} [AP]M)", row)
+        if m:
+            date = _parse_day(m.group(2))
+            if date:
+                events.append({"type": "economy", "date": date, "time": m.group(3).lstrip("0") + " ET",
+                               "title": title, "detail": detail.format(m.group(1))})
+    return events
+
+
+def fetch_bea():
+    page = http_get(BEA_URL).decode("utf-8", "ignore")
+    events, year, last_month = [], datetime.now().year, 0
+    for row in _table_rows(page):
+        heading = re.match(r"^Year (\d{4})", row)
+        if heading:
+            year, last_month = int(heading.group(1)), 0
+            continue
+        m = re.match(r"^([A-Z][a-z]+ \d{1,2}) (\d{1,2}:\d{2} [AP]M) (?:N ?ews )?(.+)$", row)
+        if not m or not (m.group(3).startswith("GDP (") or m.group(3).startswith("Personal Income and Outlays")):
+            continue
+        date = _parse_day(f"{m.group(1)}, {year}", "%B %d, %Y")
+        if date is None:
+            continue
+        if date.month < last_month:     # schedule rolled into the next year
+            year += 1
+            date = date.replace(year=year)
+        last_month = date.month
+        is_gdp = m.group(3).startswith("GDP")
+        events.append({"type": "economy", "date": date, "time": m.group(2) + " ET",
+                       "title": "GDP (economic growth)" if is_gdp else "PCE inflation & consumer spending",
+                       "detail": m.group(3)})
+    return events
+
+
+def fetch_retail_sales():
+    page = http_get(CENSUS_URL).decode("utf-8", "ignore")
+    events = []
+    for row in _table_rows(page):
+        m = re.match(r"^Advance Monthly Sales for Retail and Food Services ([A-Z][a-z]+ \d{1,2}, \d{4}) "
+                     r"(\d{1,2}:\d{2} [AP]M) ([A-Z][a-z]+ \d{4})", row)
+        if m:
+            date = _parse_day(m.group(1), "%B %d, %Y")
+            if date:
+                events.append({"type": "economy", "date": date, "time": m.group(2) + " ET",
+                               "title": "Retail sales", "detail": f"Consumer spending at stores for {m.group(3)}"})
+    return events
+
+
+def fetch_company_events(symbol):
+    cal = _cached(("calendar", symbol), 6 * 3600, lambda: dict(yf.Ticker(symbol).calendar or {})) or {}
+    info = fetch_info(symbol)
+    name = info.get("shortName") or symbol
+    if name.endswith(" (The)"):          # Yahoo writes "Coca-Cola Company (The)"
+        name = "The " + name[:-6]
+
+    def as_datetime(d):
+        return datetime(d.year, d.month, d.day) if d else None
+
+    events = []
+    dates = cal.get("Earnings Date") or []
+    if dates:
+        parts = []
+        if not is_missing(cal.get("Earnings Average")):
+            parts.append(f"EPS estimate ${cal['Earnings Average']:.2f}")
+        if not is_missing(cal.get("Revenue Average")):
+            parts.append(f"revenue estimate ${fmt_big(cal['Revenue Average'])}")
+        events.append({"type": "earnings", "date": as_datetime(dates[0]), "symbol": symbol, "time": "",
+                       "title": f"{name} earnings", "detail": " · ".join(parts) or "Quarterly results"})
+    amount = info.get("lastDividendValue")
+    per_share = f" · last dividend ${amount:.2f} per share" if amount else ""
+    if cal.get("Ex-Dividend Date"):
+        events.append({"type": "dividend", "date": as_datetime(cal["Ex-Dividend Date"]), "symbol": symbol,
+                       "time": "", "title": f"{name} ex-dividend date",
+                       "detail": "Own the shares before this day to receive the next dividend" + per_share})
+    if cal.get("Dividend Date"):
+        events.append({"type": "dividend", "date": as_datetime(cal["Dividend Date"]), "symbol": symbol,
+                       "time": "", "title": f"{name} dividend paid", "detail": "Payment date" + per_share})
+    return events
+
+
+ECONOMIC_SOURCES = [("Federal Reserve", fetch_fed_meetings), ("BLS (CPI)", lambda: fetch_bls("cpi")),
+                    ("BLS (jobs)", lambda: fetch_bls("empsit")), ("BEA", fetch_bea),
+                    ("Census Bureau", fetch_retail_sales)]
+
+
+def fetch_calendar(symbols, days=120):
+    """Upcoming events for the next few months, plus the names of any sources that failed."""
+    def economic():
+        found, failed = [], []
+        for name, fn in ECONOMIC_SOURCES:
+            try:
+                found += fn()
+            except Exception:
+                failed.append(name)
+        return found, failed
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        econ = pool.submit(lambda: _cached(("economic-calendar",), 6 * 3600, lambda: economic()))
+        companies = list(pool.map(lambda sym: _safe(fetch_company_events, sym), symbols))
+    econ_events, failed = econ.result()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    order = {"fed": 0, "economy": 1, "earnings": 2, "dividend": 3}
+    events = [e for e in econ_events + [e for group in companies for e in group]
+              if e["date"] and today <= e["date"] <= today + timedelta(days=days)]
+    events.sort(key=lambda e: (e["date"], order[e["type"]], e["title"]))
+    return {"events": events, "failed": failed}
+
+
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except Exception:
+        return []
+
+
 class Worker:
     """Runs a function on a thread, then calls back on the Tk thread with its result."""
 
@@ -1080,7 +1357,7 @@ def save_settings(settings):
 
 
 SHORTCUTS = [
-    ("Ctrl + 1 … 5", "Go to Home, Markets, News, Watchlist or Bond Market"),
+    ("Ctrl + 1 … 7", "Go to Home, Markets, News, Watchlist, Portfolio, Calendar or Bond Market"),
     ("Ctrl + F", "Jump to the search box on this page"),
     ("Esc  or  Alt + ←", "Go back (stock → market overview, news outlet → all news)"),
     ("←  /  →", "Change the chart range (1D … MAX) on the Markets page"),
@@ -1121,6 +1398,127 @@ class SharedFetch:
         for _, callback in waiters:
             if callback:
                 callback(error)
+
+
+class JsonList:
+    """A list of records saved to a JSON file, telling listeners whenever it changes."""
+
+    def __init__(self, path):
+        self.path = path
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.items = data if isinstance(data, list) else []
+        except (OSError, ValueError):
+            self.items = []
+        self.listeners = []
+
+    def save(self):
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.items, f, indent=2)
+        except OSError as exc:
+            print(f"Couldn't save {os.path.basename(self.path)}: {exc}")
+        for listener in list(self.listeners):
+            try:
+                listener()
+            except tk.TclError:
+                pass
+
+
+class PortfolioStore(JsonList):
+    """Holdings: symbol, name, shares and average cost per share."""
+
+    def __init__(self):
+        super().__init__(PORTFOLIO_FILE)
+
+    @property
+    def symbols(self):
+        return [h["symbol"] for h in self.items]
+
+    def set_holding(self, symbol, name, shares, cost):
+        for h in self.items:
+            if h["symbol"] == symbol:
+                h.update(name=name or h.get("name", ""), shares=shares, cost=cost)
+                break
+        else:
+            self.items.append({"symbol": symbol, "name": name, "shares": shares, "cost": cost})
+        self.save()
+
+    def remove(self, symbol):
+        self.items = [h for h in self.items if h["symbol"] != symbol]
+        self.save()
+
+
+class AlertStore(JsonList):
+    """Price alerts. kind is "above", "below" or "move" (a % move in one day)."""
+
+    def __init__(self):
+        super().__init__(ALERTS_FILE)
+
+    def add(self, symbol, name, kind, value):
+        self.items.append({"id": f"{symbol}-{time.time():.0f}", "symbol": symbol, "name": name, "kind": kind,
+                           "value": value, "created": datetime.now().isoformat(timespec="minutes"),
+                           "triggered": None, "price": None})
+        self.save()
+
+    def remove(self, alert_id):
+        self.items = [a for a in self.items if a["id"] != alert_id]
+        self.save()
+
+    def clear_triggered(self):
+        self.items = [a for a in self.items if not a["triggered"]]
+        self.save()
+
+    def active(self):
+        return [a for a in self.items if not a["triggered"]]
+
+
+def describe_alert(alert):
+    if alert["kind"] == "above":
+        return f"Rises above {fmt_money(alert['value'])}"
+    if alert["kind"] == "below":
+        return f"Falls below {fmt_money(alert['value'])}"
+    return f"Moves {alert['value']:g}% or more in a day"
+
+
+def alert_hit(alert, quote):
+    if alert["kind"] == "above":
+        return quote["last"] >= alert["value"]
+    if alert["kind"] == "below":
+        return quote["last"] <= alert["value"]
+    return abs(quote["pct"]) >= alert["value"]
+
+
+_NOTIFY_ICON = None
+
+
+def windows_notify(title, body):
+    """A Windows toast notification (works while the app is minimized)."""
+    global _NOTIFY_ICON
+    try:
+        if _NOTIFY_ICON is None:
+            _NOTIFY_ICON = os.path.join(DATA_DIR, "notify_icon.png")
+            if not os.path.exists(_NOTIFY_ICON):
+                icon = Image.open(resource_path("assets", "icon.png"))
+                icon.thumbnail((128, 128))
+                icon.save(_NOTIFY_ICON)
+    except Exception:
+        _NOTIFY_ICON = ""
+
+    def work():
+        try:
+            from win11toast import notify
+            kwargs = {"icon": {"src": _NOTIFY_ICON, "placement": "appLogoOverride"}} if _NOTIFY_ICON else {}
+            notify(title, body, **kwargs)
+        except Exception as exc:
+            print(f"Windows notification failed: {exc}")
+    threading.Thread(target=work, daemon=True).start()
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    except Exception:
+        pass
 
 
 class WatchlistStore:
@@ -1266,11 +1664,11 @@ def round_rect(canvas, x1, y1, x2, y2, r, **kw):
     return canvas.create_polygon(pts, smooth=True, **kw)
 
 
-def label(parent, text="", font="body", fg=INK, bg=None, **kw):
-    return tk.Label(parent, text=text, font=FONTS[font], fg=fg, bg=bg or parent.cget("bg"), **kw)
+def label(parent, text="", font="body", fg=None, bg=None, **kw):
+    return tk.Label(parent, text=text, font=FONTS[font], fg=fg or INK, bg=bg or parent.cget("bg"), **kw)
 
 
-def wrap_label(parent, text="", font="body", fg=INK, **kw):
+def wrap_label(parent, text="", font="body", fg=None, **kw):
     """A left-aligned label that re-wraps its text whenever it is resized."""
     lbl = label(parent, text, font, fg, justify="left", anchor="w", **kw)
 
@@ -1288,8 +1686,8 @@ def divider(parent, pady=0):
     return line
 
 
-def card(parent, bg=SURFACE, border=True):
-    return tk.Frame(parent, bg=bg, highlightthickness=1 if border else 0,
+def card(parent, bg=None, border=True):
+    return tk.Frame(parent, bg=bg or SURFACE, highlightthickness=1 if border else 0,
                     highlightbackground=BORDER, highlightcolor=BORDER)
 
 
@@ -1355,11 +1753,22 @@ def _caption_font(size):
     return ImageFont.load_default()
 
 
+def themed_logo():
+    """The logo with transparent background; in dark mode its black lettering turns light."""
+    logo = Image.open(resource_path("assets", "logo.png")).convert("RGBA")
+    if THEME == "dark":
+        pixels = np.array(logo)
+        dark = pixels[..., :3].mean(axis=2) < 110
+        pixels[dark, :3] = [int(INK[i:i + 2], 16) for i in (1, 3, 5)]
+        logo = Image.fromarray(pixels)
+    return logo
+
+
 def add_watermark(img, caption=""):
     """Add a footer strip: caption on the left, the Insight by Milton logo in the bottom-right corner."""
     global _LOGO
     if _LOGO is None:
-        _LOGO = Image.open(resource_path("assets", "logo.png")).convert("RGBA")
+        _LOGO = themed_logo()
     img = img.convert("RGB")
     w, h = img.size
     logo_h = max(40, int(w * 0.04))
@@ -1407,13 +1816,15 @@ def chart_caption(*parts):
 
 class RoundButton(tk.Canvas):
     """Pill-shaped button like the 'Subscribe' button on the website."""
-    STYLES = {  # fill, text, hover fill, outline
-        "primary": (ACCENT, BG, ACCENT_DARK, None),
-        "dark": (INK, BG, "#3A3A3A", None),
-        "ghost": (None, INK, SAND, INK),
-        "chip": (SAND, INK, BORDER, None),
-        "chip_on": (INK, BG, INK, None),
-    }
+    @staticmethod
+    def styles():  # fill, text, hover fill, outline — read at draw time so themes apply
+        return {
+            "primary": (ACCENT, BG, ACCENT_DARK, None),
+            "dark": (INK, BG, blend(INK, BG, 0.2), None),
+            "ghost": (None, INK, SAND, INK),
+            "chip": (SAND, INK, BORDER, None),
+            "chip_on": (INK, BG, INK, None),
+        }
 
     def __init__(self, parent, text, command=None, kind="primary", font="button",
                  padx=20, pady=9, radius=10):
@@ -1438,7 +1849,7 @@ class RoundButton(tk.Canvas):
     def _draw(self):
         self.delete("all")
         w, h = self._size()
-        fill, fg, hover, outline = self.STYLES[self.kind]
+        fill, fg, hover, outline = self.styles()[self.kind]
         color = hover if self.hover else fill
         color = color or self.parent_bg
         round_rect(self, 1, 1, w - 2, h - 2, self.radius, fill=color, outline=outline or color)
@@ -1460,6 +1871,378 @@ class RoundButton(tk.Canvas):
         w, h = self._size()
         self.configure(width=w, height=h)
         self._draw()
+
+
+class Skeleton(tk.Canvas):
+    """Softly pulsing placeholder bars shown while content loads."""
+
+    def __init__(self, parent, lines=3, line_height=12, gap=10, widths=(1.0, 0.86, 0.6)):
+        height = lines * S(line_height) + (lines - 1) * S(gap)
+        super().__init__(parent, height=height, bg=parent.cget("bg"), highlightthickness=0, bd=0)
+        self.lines, self.lh, self.gap, self.widths = lines, S(line_height), S(gap), widths
+        self.phase = 0.0
+        self.bind("<Configure>", lambda e: self._draw())
+        self.after(60, self._pulse)
+
+    def _draw(self):
+        self.delete("all")
+        w = self.winfo_width()
+        shade = blend(SAND, BORDER, (math.sin(self.phase) + 1) / 2)
+        for i in range(self.lines):
+            y = i * (self.lh + self.gap)
+            right = max(w * self.widths[i % len(self.widths)], self.lh)
+            round_rect(self, 0, y, right, y + self.lh, self.lh / 2, fill=shade, outline=shade)
+
+    def _pulse(self):
+        try:
+            if not self.winfo_exists():
+                return
+            self.phase += 0.22
+            self._draw()
+            self.after(60, self._pulse)
+        except tk.TclError:
+            pass
+
+
+def show_skeleton(container, blocks=3, lines=3, pady=14):
+    """Replace a container's contents with a few skeleton blocks."""
+    for w in container.winfo_children():
+        w.destroy()
+    for i in range(blocks):
+        Skeleton(container, lines=lines).pack(fill="x", pady=(S(pady), 0))
+
+
+class ChartLoader:
+    """A spinning ring laid over a chart while its data loads."""
+
+    def __init__(self, host):
+        self.host, self.canvas, self.job, self.angle, self.text = host, None, None, 0, ""
+
+    def show(self, text="Loading…"):
+        self.text = text
+        if self.canvas is None:
+            self.canvas = tk.Canvas(self.host, bg=BG, highlightthickness=0, bd=0)
+        self.canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+        if self.job is None:
+            self._spin()
+
+    def _spin(self):
+        try:
+            c = self.canvas
+            c.delete("all")
+            w, h = c.winfo_width(), c.winfo_height()
+            r, cx, cy = S(16), w / 2, h / 2 - S(10)
+            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=BORDER, width=S(3))
+            c.create_arc(cx - r, cy - r, cx + r, cy + r, start=self.angle, extent=95, style="arc",
+                         outline=ACCENT, width=S(3))
+            c.create_text(cx, cy + r + S(18), text=self.text, fill=FAINT, font=FONTS["small"])
+            self.angle = (self.angle - 14) % 360
+            self.job = c.after(30, self._spin)
+        except tk.TclError:
+            self.job = None
+
+    def hide(self):
+        if self.job is not None and self.canvas is not None:
+            try:
+                self.canvas.after_cancel(self.job)
+            except tk.TclError:
+                pass
+        self.job = None
+        if self.canvas is not None:
+            self.canvas.place_forget()
+
+
+class ThemeToggle(tk.Canvas):
+    """Round sun / moon button that switches between light and dark mode."""
+
+    def __init__(self, parent, command):
+        size = S(34)
+        super().__init__(parent, width=size, height=size, bg=parent.cget("bg"), highlightthickness=0,
+                         bd=0, cursor="hand2")
+        self.command, self.hover = command, False
+        self.bind("<Enter>", lambda e: self._set(True))
+        self.bind("<Leave>", lambda e: self._set(False))
+        self.bind("<ButtonRelease-1>", lambda e: self.command())
+        self._draw()
+        Tooltip(self, "Switch to light mode" if THEME == "dark" else "Switch to dark mode")
+
+    def _set(self, hover):
+        self.hover = hover
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        s = int(self["width"])
+        ring = SAND if self.hover else self["bg"]
+        self.create_oval(1, 1, s - 2, s - 2, fill=ring, outline=FAINT if self.hover else BORDER)
+        c = s / 2
+        if THEME == "dark":   # sun: switch back to light
+            r = s * 0.14
+            self.create_oval(c - r, c - r, c + r, c + r, fill=INK, outline=INK)
+            for i in range(8):
+                a = i * math.pi / 4
+                self.create_line(c + math.cos(a) * s * 0.22, c + math.sin(a) * s * 0.22,
+                                 c + math.cos(a) * s * 0.31, c + math.sin(a) * s * 0.31,
+                                 fill=INK, width=max(1, S(1.6)), capstyle="round")
+        else:                 # moon: switch to dark
+            r = s * 0.24
+            self.create_oval(c - r, c - r, c + r, c + r, fill=INK, outline=INK)
+            off = s * 0.13
+            self.create_oval(c - r + off, c - r - off * 0.6, c + r + off, c + r - off * 0.6, fill=ring, outline=ring)
+
+
+KNOWN_NAMES = dict(BIG_STOCKS)
+KNOWN_NAMES.update({sym: name for name, sym in INDEXES})
+KNOWN_NAMES.update({sym: f"{name} Select Sector SPDR" for name, sym in SECTORS})
+KNOWN_NAMES.update({"SPY": "SPDR S&P 500 ETF Trust", "QQQ": "Invesco QQQ Trust (Nasdaq-100)",
+                    "DIA": "SPDR Dow Jones Industrial Average ETF", "IWM": "iShares Russell 2000 ETF",
+                    "VOO": "Vanguard S&P 500 ETF", "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum",
+                    "GC=F": "Gold futures", "CL=F": "Crude oil futures", "^TNX": "10-Year Treasury yield"})
+
+
+def search_suggestions(query):
+    """Yahoo Finance's search-as-you-type results, cached for 10 minutes."""
+    def fetch():
+        items = []
+        for q in yf.Search(query, max_results=8, news_count=0).quotes or []:
+            if q.get("symbol"):
+                items.append({"symbol": q["symbol"], "name": q.get("shortname") or q.get("longname") or "",
+                              "detail": " · ".join(x for x in (q.get("exchDisp"), q.get("typeDisp")) if x)})
+        return items
+    return _cached(("suggest", query.lower()), 10 * 60, fetch) or []
+
+
+class Suggester:
+    """Dropdown of matching stocks under a search box. Arrow keys + Enter, or click, to pick."""
+
+    def __init__(self, app, search, on_pick):
+        self.app, self.search, self.on_pick = app, search, on_pick
+        self.popup, self.items, self.index, self.job, self.request = None, [], -1, None, 0
+        app.suggesters.append(self)
+        e = search.entry
+        e.bind("<KeyRelease>", self._on_key, add="+")
+        e.bind("<FocusIn>", lambda ev: self._schedule(), add="+")
+        e.bind("<FocusOut>", lambda ev: e.after(200, self._close_if_unfocused), add="+")
+        e.bind("<Down>", lambda ev: self._move(1))
+        e.bind("<Up>", lambda ev: self._move(-1))
+        e.bind("<Return>", self._on_return)
+        e.bind("<Escape>", self._on_escape)
+
+    # --- suggestions ---------------------------------------------------------------
+    def _on_key(self, event):
+        if event.keysym not in ("Up", "Down", "Return", "Escape", "Tab", "Shift_L", "Shift_R",
+                                "Control_L", "Control_R"):
+            self._schedule()
+
+    def _schedule(self):
+        if self.job:
+            self.search.after_cancel(self.job)
+        self.job = self.search.after(140, self._update)
+
+    def _local(self, query):
+        names = dict(KNOWN_NAMES)
+        names.update({i["symbol"]: i.get("name") or names.get(i["symbol"], "") for i in self.app.watchlist.items})
+        recent = self.app.settings.get("recent", [])
+        if not query:
+            return [{"symbol": s, "name": names.get(s, ""), "detail": "Recent"} for s in recent[:6]]
+        q = query.lower()
+        found = []
+        for sym, name in names.items():
+            words = name.lower().split()
+            if sym.lower().startswith(q) or any(w.startswith(q) for w in words) or name.lower().startswith(q):
+                found.append({"symbol": sym, "name": name, "detail": "Recent" if sym in recent else ""})
+        found.sort(key=lambda i: (i["symbol"].lower() != q, not i["symbol"].lower().startswith(q), i["symbol"]))
+        return found[:5]
+
+    def _update(self):
+        self.job = None
+        if self.app.focus_get() is not self.search.entry:
+            return
+        query = self.search.get()
+        local = self._local(query)
+        self._show(local)
+        if query:
+            self.request += 1
+            rid = self.request
+            self.app.worker.run(lambda: search_suggestions(query),
+                                lambda remote: rid == self.request and self._merge(query, local, remote),
+                                lambda e: None)
+
+    def _merge(self, query, local, remote):
+        seen, merged = set(), []
+        exact = [i for i in local + remote if i["symbol"].lower() == query.lower()]
+        for item in exact + remote + local:
+            if item["symbol"] not in seen:
+                seen.add(item["symbol"])
+                merged.append(item)
+        self._show(merged[:8])
+
+    # --- popup -------------------------------------------------------------------------
+    def _show(self, items):
+        if not items or self.app.focus_get() is not self.search.entry:
+            self.close()
+            return
+        self.items, self.index = items, -1
+        if self.popup is None:
+            self.popup = tk.Toplevel(self.app)
+            self.popup.wm_overrideredirect(True)
+            self.popup.configure(bg=BORDER)
+            self.box = tk.Frame(self.popup, bg=SURFACE)
+            self.box.pack(fill="both", expand=True, padx=1, pady=1)
+        for w in self.box.winfo_children():
+            w.destroy()
+        self.rows = []
+        if not self.search.get():
+            label(self.box, "RECENT SEARCHES", "eyebrow", fg=FAINT, bg=SURFACE).pack(anchor="w", padx=S(14),
+                                                                                     pady=(S(8), S(2)))
+        for i, item in enumerate(items):
+            row = tk.Frame(self.box, bg=SURFACE, cursor="hand2")
+            row.pack(fill="x")
+            label(row, item["symbol"], "body_semi", width=9, anchor="w").pack(side="left", padx=(S(14), 0), pady=S(7))
+            name = item["name"] if len(item["name"]) <= 38 else item["name"][:37] + "…"
+            label(row, name, "body", fg=MUTED).pack(side="left")
+            if item.get("detail"):
+                label(row, item["detail"], "small", fg=FAINT).pack(side="right", padx=S(14))
+            for w in descendants(row):
+                w.bind("<Button-1>", lambda e, k=i: self.pick(k))
+                w.bind("<Enter>", lambda e, k=i: self._highlight(k))
+            self.rows.append(row)
+        frame = self.search
+        frame.update_idletasks()
+        width = max(frame.winfo_width(), S(440))
+        x = frame.winfo_rootx() + frame.winfo_width() - width
+        y = frame.winfo_rooty() + frame.winfo_height() + S(4)
+        self.popup.geometry(f"{width}x{self.box.winfo_reqheight() + 2}+{x}+{y}")
+        self.popup.lift()
+
+    def _highlight(self, index):
+        self.index = index
+        for i, row in enumerate(self.rows):
+            set_bg(row, SAND if i == index else SURFACE)
+
+    def _move(self, step):
+        if self.popup is None or not self.items:
+            return "break"
+        self._highlight((self.index + step) % len(self.items))
+        return "break"
+
+    def _on_return(self, event):
+        if self.popup is not None and self.index >= 0:
+            self.pick(self.index)
+        else:
+            self.close()
+            if self.search.on_submit:
+                self.search.on_submit()
+        return "break"
+
+    def _on_escape(self, event):
+        if self.popup is not None:
+            self.close()
+            return "break"
+
+    def pick(self, index):
+        symbol = self.items[index]["symbol"]
+        self.close()
+        self.search.clear()
+        self.app.focus_set()
+        self.on_pick(symbol)
+
+    def _close_if_unfocused(self):
+        try:
+            if self.app.focus_get() is not self.search.entry:
+                self.close()
+        except (KeyError, tk.TclError):
+            self.close()
+
+    def close(self):
+        if self.popup is not None:
+            try:
+                self.popup.destroy()
+            except tk.TclError:
+                pass
+            self.popup = None
+        self.index = -1
+
+
+def send_feedback(kind, message, name=""):
+    """Open the user's email app with the suggestion ready to send."""
+    subject = f"Insight by Milton — {kind}"
+    body = f"{message.strip()}\n\n— {name.strip() or 'An Insight by Milton user'}\nSent from Insight by Milton v{VERSION}"
+    url = f"mailto:{CONTACT_EMAIL}?subject={quote(subject)}&body={quote(body)}"
+    try:
+        os.startfile(url)
+    except (AttributeError, OSError):
+        webbrowser.open(url)
+
+
+class FeedbackForm(tk.Frame):
+    """Type of feedback, a message box and a Send button (used on Home and in the popup)."""
+
+    def __init__(self, parent, on_sent=None, lines=5):
+        bg = parent.cget("bg")
+        super().__init__(parent, bg=bg)
+        self.on_sent = on_sent
+        self.kind = ChipGroup(self, ["Idea", "Bug report", "Other"], value="Idea")
+        self.kind.pack(anchor="w")
+        border = tk.Frame(self, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+        border.pack(fill="x", pady=(S(10), S(8)))
+        self.text = tk.Text(border, height=lines, wrap="word", relief="flat", bd=0, bg=SURFACE, fg=INK,
+                            insertbackground=INK, font=FONTS["body"], padx=S(12), pady=S(10))
+        self.text.pack(fill="both", expand=True)
+        self.text.bind("<FocusIn>", lambda e: border.configure(highlightbackground=ACCENT))
+        self.text.bind("<FocusOut>", lambda e: border.configure(highlightbackground=BORDER))
+        bottom = tk.Frame(self, bg=bg)
+        bottom.pack(fill="x")
+        self.name = SearchEntry(bottom, "Your name (optional)", width=22)
+        self.name.pack(side="left")
+        RoundButton(bottom, "Send", self.send).pack(side="right")
+        self.note = label(self, "Opens your email app with the message ready — just press Send.", "small", fg=FAINT)
+        self.note.pack(anchor="w", pady=(S(8), 0))
+
+    def send(self):
+        message = self.text.get("1.0", "end").strip()
+        if not message:
+            self.note.configure(text="Write your idea first, then press Send.", fg=DOWN)
+            self.text.focus_set()
+            return
+        send_feedback(self.kind.selected or "Idea", message, self.name.get())
+        self.text.delete("1.0", "end")
+        self.note.configure(text="Thanks! Your email app is opening with your message — press Send there.", fg=UP)
+        if self.on_sent:
+            self.on_sent()
+
+
+class FeedbackDialog(tk.Toplevel):
+    instance = None
+
+    @classmethod
+    def open(cls, app):
+        try:
+            if cls.instance is not None and cls.instance.winfo_exists():
+                cls.instance.lift()
+                return
+        except tk.TclError:
+            pass
+        cls.instance = cls(app)
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.title("Send an idea — Insight by Milton")
+        self.transient(app)
+        self.resizable(False, False)
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=S(30), pady=S(26))
+        label(box, "Have an idea?", "h2").pack(anchor="w")
+        wrap_label(box, "Suggest a feature, report a bug or tell us what you'd like to see in Insight by Milton.",
+                   "small", fg=MUTED).pack(fill="x", pady=(S(4), S(14)))
+        FeedbackForm(box, on_sent=lambda: self.after(2500, self.destroy), lines=7).pack(fill="x")
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(), S(560))
+        x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
+        self.geometry(f"{w}x{self.winfo_reqheight()}+{x}+{y}")
+        set_dark_titlebar(self, THEME == "dark")
 
 
 class CameraButton(tk.Canvas):
@@ -1536,6 +2319,7 @@ class SearchEntry(tk.Frame):
     def __init__(self, parent, placeholder, on_submit=None, width=26):
         super().__init__(parent, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
         self.placeholder = placeholder
+        self.on_submit = on_submit
         self.entry = tk.Entry(self, relief="flat", bd=0, bg=SURFACE, fg=FAINT, insertbackground=INK,
                               font=FONTS["body"], width=width)
         self.entry.pack(fill="both", expand=True, padx=S(12), pady=S(8))
@@ -1574,11 +2358,18 @@ class SearchEntry(tk.Frame):
     def focus(self):
         self.entry.focus_set()
 
+    def set(self, text):
+        self.entry.delete(0, "end")
+        self.entry.insert(0, text)
+        self.entry.configure(fg=INK)
+        self.showing_placeholder = False
+
 
 class ScrollFrame(tk.Frame):
     """A vertically scrolling page. Put content in .inner."""
 
-    def __init__(self, parent, bg=BG):
+    def __init__(self, parent, bg=None):
+        bg = bg or BG
         super().__init__(parent, bg=bg)
         self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, yscrollincrement=S(24))
         self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview,
@@ -1637,7 +2428,8 @@ class Sparkline(tk.Canvas):
 class Thumbnail(tk.Frame):
     """Fixed-height image slot that crops its picture to fit whatever width it gets."""
 
-    def __init__(self, parent, height, width=None, bg=SAND, placeholder=""):
+    def __init__(self, parent, height, width=None, bg=None, placeholder=""):
+        bg = bg or SAND
         super().__init__(parent, bg=bg, height=S(height))
         if width:
             self.configure(width=S(width))
@@ -1788,7 +2580,8 @@ class HeadlineRow(tk.Frame):
     Clicking the headline opens the article on the publisher's site; clicking the outlet opens
     its source page inside the app."""
 
-    def __init__(self, parent, app, article, bg=BG, summary=True, show_source=True):
+    def __init__(self, parent, app, article, bg=None, summary=True, show_source=True):
+        bg = bg or BG
         super().__init__(parent, bg=bg)
         src = SOURCES_BY_ID[article["source"]]
         inner = tk.Frame(self, bg=bg)
@@ -1833,9 +2626,12 @@ class ShortcutsDialog(tk.Toplevel):
 
     @classmethod
     def open(cls, app):
-        if cls.instance is not None and cls.instance.winfo_exists():
-            cls.instance.lift()
-            return
+        try:
+            if cls.instance is not None and cls.instance.winfo_exists():
+                cls.instance.lift()
+                return
+        except tk.TclError:
+            pass
         cls.instance = cls(app)
 
     def __init__(self, app):
@@ -1862,16 +2658,85 @@ class ShortcutsDialog(tk.Toplevel):
         self.focus_set()
 
 
+class AlertDialog(tk.Toplevel):
+    """Set a price alert for one stock."""
+    KINDS = {"Rises above": "above", "Falls below": "below", "Moves ±% in a day": "move"}
+
+    def __init__(self, app, symbol, name, price):
+        super().__init__(app, bg=BG)
+        self.app, self.symbol, self.name, self.price = app, symbol, name, price
+        self.title(f"Price alert — {symbol}")
+        self.transient(app)
+        self.resizable(False, False)
+        box = tk.Frame(self, bg=BG)
+        box.pack(fill="both", expand=True, padx=S(30), pady=S(24))
+        label(box, f"Price alert for {symbol}", "h2").pack(anchor="w")
+        label(box, f"{name}  ·  now {fmt_price(price)}" if price else name, "small", fg=MUTED).pack(anchor="w")
+        label(box, "NOTIFY ME WHEN THE PRICE", "eyebrow", fg=ACCENT).pack(anchor="w", pady=(S(18), S(8)))
+        self.kind = ChipGroup(box, list(self.KINDS), self._kind_changed, value="Rises above")
+        self.kind.pack(anchor="w")
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill="x", pady=(S(14), S(6)))
+        self.value = SearchEntry(row, "Price", self.save, width=16)
+        self.value.pack(side="left")
+        self.unit = label(row, "US$", "body", fg=MUTED)
+        self.unit.pack(side="left", padx=S(10))
+        self.note = label(box, "You'll get a Windows notification while Insight by Milton is open (it can be "
+                               "minimized). Prices are checked every minute.", "small", fg=FAINT,
+                          wraplength=S(460), justify="left")
+        self.note.pack(anchor="w", pady=(S(4), S(14)))
+        buttons = tk.Frame(box, bg=BG)
+        buttons.pack(fill="x")
+        RoundButton(buttons, "Save alert", self.save).pack(side="right")
+        RoundButton(buttons, "Cancel", self.destroy, kind="ghost").pack(side="right", padx=S(10))
+        existing = [a for a in app.alerts.active() if a["symbol"] == symbol]
+        if existing:
+            label(box, "ACTIVE ALERTS", "eyebrow", fg=FAINT).pack(anchor="w", pady=(S(18), S(4)))
+            for a in existing:
+                label(box, "•  " + describe_alert(a), "small").pack(anchor="w")
+        self._kind_changed("Rises above")
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
+        self.geometry(f"+{x}+{y}")
+        set_dark_titlebar(self, THEME == "dark")
+        self.value.focus()
+
+    def _kind_changed(self, choice):
+        kind = self.KINDS[choice]
+        if kind == "move":
+            self.value.set("3")
+            self.unit.configure(text="% up or down")
+        else:
+            self.value.set(f"{self.price * (1.05 if kind == 'above' else 0.95):.2f}" if self.price else "")
+            self.unit.configure(text="US$")
+
+    def save(self):
+        try:
+            value = float(self.value.get().replace("$", "").replace(",", "").replace("%", ""))
+            assert value > 0
+        except (ValueError, AssertionError):
+            self.note.configure(text="Enter a number greater than zero.", fg=DOWN)
+            return
+        self.app.alerts.add(self.symbol, self.name, self.KINDS[self.kind.selected], value)
+        self.app.set_status(f"Alert saved: {self.symbol} — {describe_alert(self.app.alerts.items[-1]).lower()}")
+        self.destroy()
+
+
 class CriteriaDialog(tk.Toplevel):
     """Popup explaining what every fundamental metric means and how it's colour-coded."""
     instance = None
 
     @classmethod
     def open(cls, app):
-        if cls.instance is not None and cls.instance.winfo_exists():
-            cls.instance.lift()
-            cls.instance.focus_set()
-            return
+        try:
+            if cls.instance is not None and cls.instance.winfo_exists():
+                cls.instance.lift()
+                cls.instance.focus_set()
+                return
+        except tk.TclError:
+            pass
         cls.instance = cls(app)
 
     def __init__(self, app):
@@ -1999,6 +2864,7 @@ class HomePage(Page):
         self._build_snapshot(wrap)
         self._build_insights(wrap)
         self._build_movers(wrap)
+        self._build_feedback(wrap)
         self._build_quote(body)
 
     # --- hero ---------------------------------------------------------------
@@ -2132,7 +2998,12 @@ class HomePage(Page):
         section_header(parent, "Featured Insights", "View all posts →", lambda: open_link(BLOG_URL))
         self.insights = tk.Frame(parent, bg=BG)
         self.insights.pack(fill="x")
-        label(self.insights, "Loading the latest from The Milton Review…", "body", fg=FAINT).pack(anchor="w")
+        for i in range(3):
+            self.insights.columnconfigure(i, weight=1, uniform="insight")
+            holder = card(self.insights)
+            holder.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else S(10), 0 if i == 2 else S(10)))
+            tk.Frame(holder, bg=SAND, height=S(190)).pack(fill="x")
+            Skeleton(holder, lines=4).pack(fill="x", padx=S(20), pady=S(20))
 
     def _show_insights(self, articles):
         for w in self.insights.winfo_children():
@@ -2194,7 +3065,7 @@ class HomePage(Page):
                   value="Gainers").pack(side="right")
         self.movers_list = tk.Frame(box, bg=SURFACE)
         self.movers_list.pack(fill="x")
-        label(self.movers_list, "Loading…", "body", fg=FAINT).pack(anchor="w")
+        Skeleton(self.movers_list, lines=7, line_height=14, gap=18, widths=(1.0,)).pack(fill="x", pady=S(8))
 
         brief = tk.Frame(row, bg=SAND)
         brief.grid(row=0, column=1, sticky="nsew", padx=(S(10), 0))
@@ -2242,6 +3113,23 @@ class HomePage(Page):
         for w in self.movers_list.winfo_children():
             w.destroy()
         label(self.movers_list, "Movers are unavailable right now.", "body", fg=DOWN).pack(anchor="w")
+
+    # --- feedback ---------------------------------------------------------------
+    def _build_feedback(self, parent):
+        box = card(parent)
+        box.pack(fill="x", pady=(S(28), 0))
+        inner = tk.Frame(box, bg=SURFACE)
+        inner.pack(fill="both", expand=True, padx=S(28), pady=S(24))
+        inner.columnconfigure(0, weight=2, uniform="fb")
+        inner.columnconfigure(1, weight=3, uniform="fb")
+        text = tk.Frame(inner, bg=SURFACE)
+        text.grid(row=0, column=0, sticky="nw", padx=(0, S(28)))
+        label(text, "HAVE AN IDEA?", "eyebrow", fg=ACCENT).pack(anchor="w")
+        label(text, "Help shape Insight by Milton", "h2").pack(anchor="w", pady=(S(4), S(8)))
+        wrap_label(text, "Suggest a feature, report something that isn't working, or tell us what you'd "
+                         "like to read about. Every message goes straight to The Milton Review.",
+                   "body", fg=MUTED).pack(fill="x")
+        FeedbackForm(inner, lines=3).grid(row=0, column=1, sticky="nsew")
 
     # --- rotating quote -------------------------------------------------------
     def _build_quote(self, parent):
@@ -2296,7 +3184,9 @@ class MarketsPage(Page):
         search.pack(side="right", anchor="s")
         self.search = SearchEntry(search, "Search e.g. AAPL or Tesla", self.do_search, width=28)
         self.search.pack(side="left")
+        self.suggest = Suggester(self.app, self.search, self.load)
         RoundButton(search, "Search", self.do_search).pack(side="left", padx=(S(10), 0))
+        RoundButton(search, "Compare stocks", lambda: self.open_compare(), kind="ghost").pack(side="left", padx=(S(10), 0))
 
         popular = tk.Frame(wrap, bg=BG)
         popular.pack(fill="x", pady=(0, S(22)))
@@ -2313,6 +3203,8 @@ class MarketsPage(Page):
         self.overview = tk.Frame(wrap, bg=BG)
         self.overview.pack(fill="both", expand=True)
         self._build_overview(self.overview)
+        self.compare = tk.Frame(wrap, bg=BG)      # compare view, shown by open_compare()
+        self._build_compare(self.compare)
 
         cols = tk.Frame(wrap, bg=BG)   # the single-stock detail view, shown by load()
         self.detail = cols
@@ -2359,6 +3251,7 @@ class MarketsPage(Page):
         chart.pack(fill="x", pady=(S(4), 0))
         self.canvas.mpl_connect("motion_notify_event", self._on_hover)
         self.canvas.mpl_connect("draw_event", self._save_background)
+        self.loader = ChartLoader(chart)
         self.canvas.mpl_connect("figure_leave_event", lambda e: self._hide_hover())
 
         self.fund_section = tk.Frame(main, bg=BG)   # only packed for companies, see _fill_fundamentals
@@ -2369,7 +3262,16 @@ class MarketsPage(Page):
 
         # sidebar
         self.watch_button = RoundButton(side, "+ Add to Watchlist", self.toggle_watch)
-        self.watch_button.pack(anchor="w", pady=(S(4), S(18)))
+        self.watch_button.pack(anchor="w", pady=(S(4), S(8)))
+        actions = tk.Frame(side, bg=BG)
+        actions.pack(anchor="w", pady=(0, S(18)))
+        RoundButton(actions, "Set price alert", self.open_alert, kind="ghost", font="chip", padx=12, pady=6,
+                    radius=12).pack(side="left")
+        RoundButton(actions, "Compare", lambda: self.open_compare([self.data["symbol"], "SPY"] if self.data else None),
+                    kind="ghost", font="chip", padx=12, pady=6, radius=12).pack(side="left", padx=S(8))
+        self.alert_note = label(side, "", "small", fg=FAINT)
+        self.alert_note.pack(anchor="w", pady=(0, S(10)))
+        self.app.alerts.listeners.append(self._update_alert_note)
         stats = card(side)
         stats.pack(fill="x")
         stats_box = tk.Frame(stats, bg=SURFACE)
@@ -2426,6 +3328,7 @@ class MarketsPage(Page):
         w = self.index_canvas.get_tk_widget()
         w.configure(height=S(340), bg=BG, highlightthickness=0)
         w.pack(fill="x", pady=(S(6), 0))
+        self.index_loader = ChartLoader(w)
 
         # sectors + largest companies
         lower = tk.Frame(parent, bg=BG)
@@ -2565,12 +3468,14 @@ class MarketsPage(Page):
     def _load_index_chart(self):
         self.overview_id += 1
         rid, rk = self.overview_id, self.overview_range
+        self.index_loader.show("Loading indices…")
         self.app.worker.run(lambda: fetch_index_history(rk),
                             lambda df: self._draw_index_chart(rid, rk, df))
 
     def _draw_index_chart(self, rid, range_key, df):
         if rid != self.overview_id or df.empty:
             return
+        self.index_loader.hide()
         fig = self.index_fig
         fig.clear()
         ax = fig.add_subplot(111)
@@ -2602,13 +3507,235 @@ class MarketsPage(Page):
         if mode == self.mode:
             return
         self.mode = mode
-        if mode == "overview":
-            self.detail.pack_forget()
-            self.overview.pack(fill="both", expand=True)
-        else:
-            self.overview.pack_forget()
-            self.detail.pack(fill="both", expand=True)
+        for name, frame in (("overview", self.overview), ("detail", self.detail), ("compare", self.compare)):
+            if name == mode:
+                frame.pack(fill="both", expand=True)
+            else:
+                frame.pack_forget()
         self.scroller.to_top()
+
+    # --- price alerts ---------------------------------------------------------------
+    def open_alert(self):
+        if not self.data:
+            return
+        info = self.data["info"]
+        AlertDialog(self.app, self.data["symbol"], info.get("shortName") or self.data["symbol"], self.last_price)
+
+    def _update_alert_note(self):
+        if not self.data:
+            return
+        n = sum(1 for a in self.app.alerts.active() if a["symbol"] == self.data["symbol"])
+        self.alert_note.configure(text=f"{n} active price alert{'s' if n != 1 else ''} — see Watchlist" if n else "")
+
+    # --- compare stocks -----------------------------------------------------------------
+    COMPARE_RANGES = ["1M", "6M", "YTD", "1Y", "5Y"]
+    COMPARE_COLORS = ["#D47A5D", "#5B7FA6", "#7E9B6A", "#C9A227", "#8E79AE"]
+    COMPARE_ROWS = [("Price", None), ("Today", None), ("Period change", None), ("Market cap", None),
+                    ("P/E (TTM)", "P/E (TTM)"), ("Forward P/E", "Forward P/E"), ("Profit margin", "Profit margin"),
+                    ("Revenue growth", "Revenue growth"), ("Debt / Equity", "Debt / Equity"),
+                    ("Dividend yield", None), ("Beta", None), ("Fundamentals", None)]
+
+    def _build_compare(self, parent):
+        self.compare_symbols, self.compare_range, self.compare_id = ["AAPL", "MSFT", "GOOGL"], "1Y", 0
+        self.compare_data = {}
+        back = label(parent, "← Market overview", "body_semi", fg=ACCENT)
+        back.pack(anchor="w", pady=(0, S(14)))
+        make_clickable(back, self.show_overview)
+        top = tk.Frame(parent, bg=BG)
+        top.pack(fill="x")
+        label(top, "Compare Stocks", "h2").pack(side="left")
+        add = tk.Frame(top, bg=BG)
+        add.pack(side="right")
+        self.compare_entry = SearchEntry(add, "Add a symbol to compare", self._compare_add_typed, width=24)
+        self.compare_entry.pack(side="left")
+        RoundButton(add, "Add", self._compare_add_typed).pack(side="left", padx=(S(10), 0))
+        Suggester(self.app, self.compare_entry, self.compare_add)
+        label(parent, "Up to 5 stocks, ETFs or crypto — percent change over the period, plus key numbers side by side.",
+              "small", fg=MUTED).pack(anchor="w", pady=(S(2), S(12)))
+        controls = tk.Frame(parent, bg=BG)
+        controls.pack(fill="x")
+        self.compare_chips = tk.Frame(controls, bg=BG)
+        self.compare_chips.pack(side="left")
+        CameraButton(controls, self._screenshot_compare).pack(side="right", padx=(S(10), 0))
+        ChipGroup(controls, self.COMPARE_RANGES, self._compare_set_range, value=self.compare_range).pack(side="right")
+        self.compare_fig = Figure(figsize=(9, 3.8), dpi=96 * SCALE, facecolor=BG)
+        self.compare_canvas = FigureCanvasTkAgg(self.compare_fig, master=parent)
+        w = self.compare_canvas.get_tk_widget()
+        w.configure(height=S(380), bg=BG, highlightthickness=0)
+        w.pack(fill="x", pady=(S(10), 0))
+        self.compare_loader = ChartLoader(w)
+        table = card(parent)
+        table.pack(fill="x", pady=(S(20), 0))
+        self.compare_table = tk.Frame(table, bg=SURFACE)
+        self.compare_table.pack(fill="x", padx=S(14), pady=S(10))
+
+    def open_compare(self, symbols=None):
+        if symbols:
+            self.compare_symbols = list(dict.fromkeys(s for s in symbols if s))[:5]
+        if not self.loaded:
+            self.loaded = True
+            self._load_overview()
+        self.request_id += 1
+        self._set_mode("compare")
+        self.app.update_title("Compare")
+        self._compare_load()
+
+    def compare_add(self, symbol):
+        symbol = symbol.upper()
+        if symbol in self.compare_symbols:
+            return
+        if len(self.compare_symbols) >= 5:
+            self.app.set_status("You can compare up to 5 at once — remove one first.")
+            return
+        self.compare_symbols.append(symbol)
+        self._compare_load()
+
+    def _compare_add_typed(self):
+        text = self.compare_entry.get()
+        if not text:
+            return
+        self.compare_entry.clear()
+
+        def resolve():
+            sym = text.upper()
+            if TICKER_RE.match(sym) and not fetch_history(sym, "1M").empty:
+                return sym
+            return search_symbol(text)[0]
+        self.app.worker.run(resolve, self.compare_add,
+                            lambda e: self.app.set_status(f"Couldn't find “{text}”."))
+
+    def _compare_remove(self, symbol):
+        self.compare_symbols = [s for s in self.compare_symbols if s != symbol]
+        self._compare_load()
+
+    def _compare_set_range(self, range_key):
+        self.compare_range = range_key
+        self._compare_load()
+
+    def _render_compare_chips(self):
+        for w in self.compare_chips.winfo_children():
+            w.destroy()
+        for i, sym in enumerate(self.compare_symbols):
+            chip = tk.Frame(self.compare_chips, bg=SAND)
+            chip.pack(side="left", padx=(0, S(8)))
+            dot = tk.Canvas(chip, width=S(10), height=S(10), bg=SAND, highlightthickness=0)
+            dot.create_oval(1, 1, S(9), S(9), fill=self.COMPARE_COLORS[i], outline="")
+            dot.pack(side="left", padx=(S(10), S(6)), pady=S(6))
+            label(chip, sym, "small_semi").pack(side="left")
+            x = label(chip, "  ✕", "small", fg=FAINT, cursor="hand2")
+            x.pack(side="left", padx=(0, S(10)))
+            x.bind("<Button-1>", lambda e, s=sym: self._compare_remove(s))
+
+    def _compare_load(self):
+        self._render_compare_chips()
+        self.compare_id += 1
+        rid, symbols, rk = self.compare_id, list(self.compare_symbols), self.compare_range
+        if not symbols:
+            self.compare_fig.clear()
+            self.compare_canvas.draw_idle()
+            for w in self.compare_table.winfo_children():
+                w.destroy()
+            label(self.compare_table, "Add a symbol above to start comparing.", "body", fg=FAINT).pack(pady=S(20))
+            return
+        self.compare_loader.show("Loading " + ", ".join(symbols) + "…")
+
+        def work():
+            def one(sym):
+                return sym, fetch_history(sym, rk), fetch_info(sym)
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                return list(pool.map(one, symbols))
+        self.app.worker.run(work, lambda res: rid == self.compare_id and self._compare_show(res),
+                            lambda e: (self.compare_loader.hide(), self.app.set_status("Couldn't load comparison data.")))
+
+    def _compare_show(self, results):
+        self.compare_loader.hide()
+        closes = {sym: hist["Close"].tz_localize(None) if hist.index.tz is not None else hist["Close"]
+                  for sym, hist, _ in results if not hist.empty}
+        self.compare_data = {sym: info for sym, _, info in results}
+        if not closes:
+            return
+        df = pd.DataFrame(closes)
+        df.index = df.index.normalize()
+        df = df.groupby(level=0).last().ffill().dropna()
+        fig = self.compare_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        style_axes(ax, price_on_right=True)
+        x = np.arange(len(df))
+        changes = {}
+        for i, sym in enumerate(self.compare_symbols):
+            if sym not in df:
+                continue
+            series = (df[sym] / df[sym].iloc[0] - 1) * 100
+            changes[sym] = series.iloc[-1]
+            ax.plot(x, series.to_numpy(), color=self.COMPARE_COLORS[i], linewidth=1.8,
+                    label=f"{sym}  {series.iloc[-1]:+.1f}%")
+        ax.axhline(0, color=FAINT, linewidth=0.8, linestyle=(0, (2, 3)))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:+.0f}%"))
+        ax.set_xlim(0, max(len(x) - 1, 1))
+        set_index_ticks(ax, df.index, self.compare_range)
+        ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=8.5, ncol=5,
+                  labelcolor=MUTED, borderaxespad=0.2)
+        fig.subplots_adjust(left=0.02, right=0.93, top=0.88, bottom=0.1)
+        self.compare_canvas.draw_idle()
+        self._compare_table(changes)
+
+    def _compare_table(self, changes):
+        t = self.compare_table
+        for w in t.winfo_children():
+            w.destroy()
+        specs = {spec["name"]: spec for _, metrics in FUNDAMENTALS for spec in metrics}
+        t.columnconfigure(0, minsize=S(170))
+        for c in range(1, len(self.compare_symbols) + 1):
+            t.columnconfigure(c, weight=1, uniform="cmp")
+        for c, sym in enumerate(self.compare_symbols, start=1):
+            head = tk.Frame(t, bg=SURFACE)
+            head.grid(row=0, column=c, sticky="e", pady=(S(6), S(8)), padx=S(8))
+            dot = tk.Canvas(head, width=S(9), height=S(9), bg=SURFACE, highlightthickness=0)
+            dot.create_oval(1, 1, S(8), S(8), fill=self.COMPARE_COLORS[c - 1], outline="")
+            dot.pack(side="left", padx=(0, S(6)))
+            name = label(head, sym, "body_semi", cursor="hand2")
+            name.pack(side="left")
+            name.bind("<Button-1>", lambda e, s=sym: self.load(s))
+        for r, (row_name, spec_name) in enumerate(self.COMPARE_ROWS, start=1):
+            tk.Frame(t, bg=BORDER, height=1).grid(row=2 * r - 1, column=0, columnspan=6, sticky="ew")
+            label(t, row_name, "small", fg=MUTED).grid(row=2 * r, column=0, sticky="w", pady=S(6), padx=S(8))
+            for c, sym in enumerate(self.compare_symbols, start=1):
+                info = self.compare_data.get(sym, {})
+                cell = self._compare_cell(t, row_name, specs.get(spec_name), info, changes.get(sym))
+                cell.grid(row=2 * r, column=c, sticky="e", padx=S(8))
+
+    def _compare_cell(self, parent, row_name, spec, info, change):
+        if spec is not None:
+            rating, text = judge_metric(spec, info)
+            return rating_pill(parent, rating, text, width=9)
+        price = info.get("regularMarketPrice") or info.get("currentPrice")
+        prev = info.get("regularMarketPreviousClose")
+        if row_name == "Price":
+            return label(parent, fmt_price(price), "small_semi")
+        if row_name == "Today":
+            pct = (price / prev - 1) * 100 if price and prev else None
+            return label(parent, fmt_pct(pct), "small_semi", fg=trend_color(pct))
+        if row_name == "Period change":
+            return label(parent, fmt_pct(change), "small_semi", fg=trend_color(change))
+        if row_name == "Market cap":
+            return label(parent, fmt_big(info.get("marketCap")), "small")
+        if row_name == "Dividend yield":
+            div = info.get("trailingAnnualDividendYield")
+            return label(parent, f"{div * 100:.2f}%" if div else "—", "small")
+        if row_name == "Beta":
+            return label(parent, fmt_price(info.get("beta")), "small")
+        if info.get("quoteType") != "EQUITY":
+            return label(parent, "n/a", "small", fg=FAINT)
+        ratings = [judge_metric(sp, info)[0] for _, metrics in FUNDAMENTALS for sp in metrics]
+        box = tk.Frame(parent, bg=SURFACE)
+        for rating in ("good", "fair", "weak"):
+            rating_pill(box, rating, str(ratings.count(rating)), width=3).pack(side="left", padx=(S(3), 0))
+        return box
+
+    def _screenshot_compare(self):
+        caption = chart_caption("Compare: " + " vs ".join(self.compare_symbols), f"% change, {self.compare_range}")
+        save_screenshot(self.app, figure_image(self.compare_fig), "Compare " + " ".join(self.compare_symbols), caption)
 
     def first_load(self):
         self._load_overview()
@@ -2622,6 +3749,10 @@ class MarketsPage(Page):
         if self.mode == "detail" and self.data:
             forget_symbol(self.data["symbol"])
             self.load(self.data["symbol"])
+        elif self.mode == "compare":
+            for sym in self.compare_symbols:
+                forget_symbol(sym)
+            self._compare_load()
         else:
             self._load_overview()
 
@@ -2644,8 +3775,10 @@ class MarketsPage(Page):
         self.request_id += 1
         rid, rk = self.request_id, self.range_key
         self.scroller.to_top()
-        self._chart_message(f"Loading {query.upper()}…")
+        self.loader.show(f"Loading {query.upper()}…")
         self.app.set_status(f"Loading {query.upper()}…")
+        show_skeleton(self.news_box, blocks=2, lines=2)
+        show_skeleton(self.stats_box, blocks=1, lines=8, pady=6)
         self.app.worker.run(lambda: load_symbol(query, rk),
                             lambda d: self._show(rid, d), lambda e: self._failed(rid, e))
 
@@ -2656,7 +3789,7 @@ class MarketsPage(Page):
             return
         self.request_id += 1
         rid, sym = self.request_id, self.data["symbol"]
-        slow = self.after(250, lambda: rid == self.request_id and self._chart_message("Loading…"))
+        slow = self.after(250, lambda: rid == self.request_id and self.loader.show("Loading…"))
         self.app.worker.run(lambda: fetch_history(sym, range_key),
                             lambda h: (self.after_cancel(slow), self._show_range(rid, h)),
                             lambda e: (self.after_cancel(slow), self._failed(rid, e)))
@@ -2686,6 +3819,8 @@ class MarketsPage(Page):
     def screenshot(self):
         if self.mode == "detail":
             self.save_chart()
+        elif self.mode == "compare":
+            self._screenshot_compare()
         else:
             self._screenshot_indices()
 
@@ -2746,6 +3881,7 @@ class MarketsPage(Page):
                                        f"{clock_time(datetime.now())}. Prices may be delayed.")
 
         self._update_watch_button()
+        self._update_alert_note()
         self._draw_chart()
         self.canvas.draw()   # paint the chart now; the panels below are built a moment later
         self.app.set_status(f"Showing {sym}")
@@ -2875,7 +4011,7 @@ class MarketsPage(Page):
         if info.get("quoteType") not in ("EQUITY", "ETF"):
             name = name if info.get("quoteType") != "CRYPTOCURRENCY" else name.split(" ")[0]
         matches = company_pattern(symbol, name)
-        label(self.news_box, "Looking through today's headlines…", "body", fg=FAINT).pack(anchor="w")
+        show_skeleton(self.news_box, blocks=2, lines=2)
 
         def show(news):
             if not self.data or self.data["symbol"] != symbol:
@@ -2896,12 +4032,14 @@ class MarketsPage(Page):
 
     # --- chart ------------------------------------------------------------------
     def _chart_message(self, text):
+        self.loader.hide()
         self.fig.clear()
         self.hover_artists = None
         self.fig.text(0.5, 0.5, text, ha="center", va="center", color=FAINT, fontsize=11)
         self.canvas.draw_idle()
 
     def _draw_chart(self):
+        self.loader.hide()
         hist = self.data["hist"]
         self.fig.clear()
         intraday = self.range_key in ("1D", "5D")
@@ -3061,8 +4199,7 @@ class NewsPage(Page):
         divider(left, pady=(S(10), 0))
         self.list = tk.Frame(left, bg=BG)
         self.list.pack(fill="x")
-        label(self.list, f"Loading headlines from {len(NEWS_SOURCES)} outlets…", "body",
-              fg=FAINT).pack(anchor="w", pady=S(12))
+        show_skeleton(self.list, blocks=6, lines=3, pady=22)
         self.more = RoundButton(left, "Show more headlines", self._show_more, kind="ghost")
 
         right = tk.Frame(cols, bg=BG)
@@ -3269,7 +4406,7 @@ class SourcePage(Page):
         section_header(self.content, "Top Stories", f"In the order {src['name']} features them")
         self.stories = tk.Frame(self.content, bg=BG)
         self.stories.pack(fill="x")
-        label(self.stories, "Loading…", "body", fg=FAINT).pack(anchor="w")
+        show_skeleton(self.stories, blocks=3, lines=3)
         rid = self.request_id
         self.app.news.get(lambda news: self._show_stories(rid, news.get(src["id"], [])),
                           lambda e: self._show_stories(rid, []))
@@ -3351,6 +4488,21 @@ class WatchlistPage(Page):
         self.table.pack(fill="x", padx=S(8), pady=S(6))
         self.app.watchlist.listeners.append(self._watchlist_changed)
 
+        alerts_head = tk.Frame(wrap, bg=BG)
+        alerts_head.pack(fill="x", pady=(S(32), S(10)))
+        label(alerts_head, "Price Alerts", "h2").pack(side="left")
+        clear = label(alerts_head, "Clear triggered", "small_semi", fg=ACCENT, cursor="hand2")
+        clear.pack(side="right")
+        clear.bind("<Button-1>", lambda e: self.app.alerts.clear_triggered())
+        label(wrap, "Set alerts from any stock's page (“Set price alert”). You'll get a Windows notification "
+                    "while the app is open, even minimized.", "small", fg=MUTED).pack(anchor="w", pady=(0, S(10)))
+        alerts = card(wrap)
+        alerts.pack(fill="x")
+        self.alert_box = tk.Frame(alerts, bg=SURFACE)
+        self.alert_box.pack(fill="x", padx=S(14), pady=S(8))
+        self.app.alerts.listeners.append(self._render_alerts)
+        self._render_alerts()
+
     def _configure_columns(self, frame):
         for i, (_, width, stretch, _) in enumerate(self.COLUMNS):
             frame.columnconfigure(i, minsize=S(width), weight=stretch)
@@ -3406,6 +4558,33 @@ class WatchlistPage(Page):
         for item in items:
             divider(self.table)
             self._row(item)
+
+    def _render_alerts(self):
+        box = self.alert_box
+        for w in box.winfo_children():
+            w.destroy()
+        items = sorted(self.app.alerts.items, key=lambda a: (a["triggered"] is not None, a["symbol"]))
+        if not items:
+            label(box, "No price alerts yet.", "body", fg=FAINT).pack(anchor="w", pady=S(14), padx=S(6))
+            return
+        for i, a in enumerate(items):
+            if i:
+                divider(box)
+            row = tk.Frame(box, bg=SURFACE)
+            row.pack(fill="x")
+            sym = label(row, a["symbol"], "body_semi", width=8, anchor="w", cursor="hand2")
+            sym.pack(side="left", padx=(S(6), 0), pady=S(10))
+            sym.bind("<Button-1>", lambda e, s=a["symbol"]: self.app.open_symbol(s))
+            label(row, describe_alert(a), "body").pack(side="left")
+            remove = label(row, "✕", "body", fg=FAINT, cursor="hand2")
+            remove.pack(side="right", padx=S(8))
+            remove.bind("<Button-1>", lambda e, k=a["id"]: self.app.alerts.remove(k))
+            if a["triggered"]:
+                when = datetime.fromisoformat(a["triggered"])
+                text = f"Triggered {short_date(when)} {clock_time(when)} at {fmt_price(a['price'])}"
+                rating_pill(row, "good", text, width=0).pack(side="right", padx=S(10))
+            else:
+                rating_pill(row, None, "Watching", width=0).pack(side="right", padx=S(10))
 
     def _sort_by(self, column):
         """Click once for ascending, again for descending, a third time for your own order."""
@@ -3556,6 +4735,7 @@ class BondPage(Page):
         w = self.curve_canvas.get_tk_widget()
         w.configure(height=S(380), bg=BG, highlightthickness=0)
         w.pack(fill="x", pady=(S(8), 0))
+        self.curve_loader = ChartLoader(w)
 
         table = card(row)
         table.grid(row=0, column=1, sticky="new")
@@ -3577,6 +4757,7 @@ class BondPage(Page):
         w = self.spread_canvas.get_tk_widget()
         w.configure(height=S(300), bg=BG, highlightthickness=0)
         w.pack(fill="x", pady=(S(8), 0))
+        self.spread_loader = ChartLoader(w)
 
         # explainer
         explain = tk.Frame(wrap, bg=SAND)
@@ -3610,10 +4791,13 @@ class BondPage(Page):
         self.refresh()
 
     def refresh(self):
-        self._message(self.curve_fig, self.curve_canvas, "Loading…")
+        self.curve_loader.show("Loading Treasury yields…")
+        self.spread_loader.show("Loading spread history…")
         self.app.worker.run(fetch_treasury, self._show, self._failed)
 
     def _failed(self, error):
+        self.curve_loader.hide()
+        self.spread_loader.hide()
         self.asof.configure(text=str(error), fg=DOWN)
         self._message(self.curve_fig, self.curve_canvas, "Treasury data unavailable")
         self._message(self.spread_fig, self.spread_canvas, "")
@@ -3625,6 +4809,8 @@ class BondPage(Page):
         canvas.draw_idle()
 
     def _show(self, df):
+        self.curve_loader.hide()
+        self.spread_loader.hide()
         latest = df.iloc[-1]
         prior = df.iloc[-2] if len(df) > 1 else latest
         date = latest["Date"]
@@ -3753,18 +4939,562 @@ class BondPage(Page):
         self.spread_canvas.draw_idle()
 
 
+# ------------------------------------------------------------- Portfolio ------
+PIE_COLORS = ["#D47A5D", "#5B7FA6", "#7E9B6A", "#C9A227", "#8E79AE", "#4E9A9A", "#B5654A", "#9AA0A6"]
+
+
+class PortfolioPage(Page):
+    refresh_ms = 60_000
+    PERF_RANGES = ["1M", "6M", "YTD", "1Y", "5Y"]
+    COLUMNS = [("SYMBOL", 84, 0, "w"), ("NAME", 160, 1, "w"), ("SHARES", 76, 0, "e"), ("AVG COST", 90, 0, "e"),
+               ("PRICE", 90, 0, "e"), ("VALUE", 110, 0, "e"), ("TODAY", 104, 0, "e"),
+               ("TOTAL GAIN", 160, 0, "e"), ("WEIGHT", 70, 0, "e"), ("", 70, 0, "e")]
+
+    def build(self):
+        self.data, self.history, self.alloc_mode, self.perf_range = None, None, "Holdings", "1Y"
+        self.scroller = ScrollFrame(self)
+        self.scroller.pack(fill="both", expand=True)
+        wrap = tk.Frame(self.scroller.inner, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=S(56), pady=(0, S(40)))
+        head = self.page_header(wrap, "Portfolio", "Track what you own — value, gains, allocation and dividend "
+                                                   "income. Prices refresh every minute.")
+        RoundButton(head, "Refresh", self.refresh, kind="ghost").pack(side="right", anchor="s")
+
+        form = card(wrap)
+        form.pack(fill="x")
+        fbox = tk.Frame(form, bg=SURFACE)
+        fbox.pack(fill="x", padx=S(22), pady=S(18))
+        label(fbox, "ADD OR UPDATE A HOLDING", "eyebrow", fg=ACCENT).pack(anchor="w")
+        row = tk.Frame(fbox, bg=SURFACE)
+        row.pack(fill="x", pady=(S(10), 0))
+        self.sym_entry = SearchEntry(row, "Symbol e.g. AAPL", self.save_holding, width=16)
+        self.sym_entry.pack(side="left")
+        self.shares_entry = SearchEntry(row, "Shares e.g. 10", self.save_holding, width=14)
+        self.shares_entry.pack(side="left", padx=(S(10), 0))
+        self.cost_entry = SearchEntry(row, "Average price paid per share e.g. 180", self.save_holding, width=32)
+        self.cost_entry.pack(side="left", padx=(S(10), 0))
+        RoundButton(row, "Save holding", self.save_holding).pack(side="left", padx=(S(10), 0))
+        self.form_msg = label(fbox, "Tip: saving a symbol you already own updates it. Click ✎ on a row to edit.",
+                              "small", fg=FAINT)
+        self.form_msg.pack(anchor="w", pady=(S(10), 0))
+        Suggester(self.app, self.sym_entry, lambda s: (self.sym_entry.set(s), self.shares_entry.focus()))
+
+        self.empty = tk.Frame(wrap, bg=BG)
+        label(self.empty, "Your portfolio is empty", "h2").pack(anchor="w", pady=(S(28), S(4)))
+        label(self.empty, "Add your first holding above — for example AAPL, 10 shares at $180 — to see its value, "
+                          "gains, allocation and dividends.", "body", fg=MUTED).pack(anchor="w")
+        self.content = tk.Frame(wrap, bg=BG)
+
+        cards = tk.Frame(self.content, bg=BG)
+        cards.pack(fill="x", pady=(S(24), 0))
+        self.summary = {}
+        for i, key in enumerate(("Total value", "Today", "Total gain", "Yearly dividends")):
+            cards.columnconfigure(i, weight=1, uniform="pf")
+            c = card(cards)
+            c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else S(8), 0 if i == 3 else S(8)))
+            box = tk.Frame(c, bg=SURFACE)
+            box.pack(fill="both", expand=True, padx=S(20), pady=S(16))
+            label(box, key.upper(), "eyebrow", fg=MUTED).pack(anchor="w")
+            value = label(box, "—", "card_value")
+            value.pack(anchor="w", pady=(S(6), S(2)))
+            sub_label = label(box, " ", "small", fg=FAINT)
+            sub_label.pack(anchor="w")
+            self.summary[key] = (value, sub_label)
+
+        label(self.content, "Holdings", "h2").pack(anchor="w", pady=(S(28), S(10)))
+        table = card(self.content)
+        table.pack(fill="x")
+        self.table = tk.Frame(table, bg=SURFACE)
+        self.table.pack(fill="x", padx=S(8), pady=S(6))
+
+        charts = tk.Frame(self.content, bg=BG)
+        charts.pack(fill="x", pady=(S(28), 0))
+        charts.columnconfigure(0, weight=2, uniform="pfc")
+        charts.columnconfigure(1, weight=3, uniform="pfc")
+        left = card(charts)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, S(10)))
+        lbox = tk.Frame(left, bg=SURFACE)
+        lbox.pack(fill="both", expand=True, padx=S(20), pady=S(16))
+        lhead = tk.Frame(lbox, bg=SURFACE)
+        lhead.pack(fill="x")
+        label(lhead, "Allocation", "h2").pack(side="left")
+        CameraButton(lhead, self._screenshot_allocation).pack(side="right")
+        ChipGroup(lhead, ["Holdings", "Sectors"], self._set_alloc, value="Holdings").pack(side="right", padx=S(10))
+        self.alloc_fig = Figure(figsize=(5, 3.2), dpi=96 * SCALE, facecolor=SURFACE)
+        self.alloc_canvas = FigureCanvasTkAgg(self.alloc_fig, master=lbox)
+        w = self.alloc_canvas.get_tk_widget()
+        w.configure(height=S(300), bg=SURFACE, highlightthickness=0)
+        w.pack(fill="x", pady=(S(8), 0))
+
+        right = card(charts)
+        right.grid(row=0, column=1, sticky="nsew", padx=(S(10), 0))
+        rbox = tk.Frame(right, bg=SURFACE)
+        rbox.pack(fill="both", expand=True, padx=S(20), pady=S(16))
+        rhead = tk.Frame(rbox, bg=SURFACE)
+        rhead.pack(fill="x")
+        label(rhead, "Performance vs S&P 500", "h2").pack(side="left")
+        CameraButton(rhead, self._screenshot_performance).pack(side="right")
+        ChipGroup(rhead, self.PERF_RANGES, self._set_perf_range, value=self.perf_range).pack(side="right", padx=S(10))
+        label(rbox, "How today's holdings would have done over the period, compared with the S&P 500.", "small",
+              fg=MUTED).pack(anchor="w")
+        self.perf_fig = Figure(figsize=(7, 3.2), dpi=96 * SCALE, facecolor=SURFACE)
+        self.perf_canvas = FigureCanvasTkAgg(self.perf_fig, master=rbox)
+        w = self.perf_canvas.get_tk_widget()
+        w.configure(height=S(280), bg=SURFACE, highlightthickness=0)
+        w.pack(fill="x", pady=(S(8), 0))
+        self.perf_loader = ChartLoader(w)
+
+        label(self.content, "Dividend Income", "h2").pack(anchor="w", pady=(S(28), S(4)))
+        label(self.content, "Estimated from each company's current yearly dividend rate. Dividends can change.",
+              "small", fg=MUTED).pack(anchor="w", pady=(0, S(10)))
+        div = card(self.content)
+        div.pack(fill="x")
+        self.div_box = tk.Frame(div, bg=SURFACE)
+        self.div_box.pack(fill="x", padx=S(14), pady=S(8))
+        self.app.portfolio.listeners.append(self._changed)
+
+    # --- data -------------------------------------------------------------------------
+    def first_load(self):
+        self._toggle_empty()
+        self.refresh()
+
+    def _toggle_empty(self):
+        if self.app.portfolio.items:
+            self.empty.pack_forget()
+            self.content.pack(fill="both", expand=True)
+        else:
+            self.content.pack_forget()
+            self.empty.pack(fill="x")
+
+    def _changed(self):
+        if self.loaded:
+            self._toggle_empty()
+            self.refresh()
+
+    def refresh(self):
+        symbols = self.app.portfolio.symbols
+        if not symbols:
+            return
+        if self.data is None:
+            show_skeleton(self.table, blocks=2, lines=2)
+        self.app.worker.run(lambda: fetch_portfolio(symbols), self._got,
+                            lambda e: self.form_msg.configure(text="Couldn't refresh prices. Check your connection.",
+                                                              fg=DOWN))
+        self.perf_loader.show("Loading history…")
+        self.app.worker.run(lambda: fetch_portfolio_history(tuple(symbols)), self._got_history,
+                            lambda e: self.perf_loader.hide())
+
+    def _got(self, data):
+        self.data = data
+        self._render()
+
+    def _got_history(self, df):
+        self.history = df
+        self._draw_performance()
+
+    def screenshot(self):
+        self._screenshot_performance()
+
+    # --- form --------------------------------------------------------------------------
+    def save_holding(self):
+        text = self.sym_entry.get()
+        try:
+            shares = float(self.shares_entry.get().replace(",", ""))
+            cost = float(self.cost_entry.get().replace("$", "").replace(",", ""))
+            assert shares > 0 and cost >= 0 and text
+        except (ValueError, AssertionError):
+            self.form_msg.configure(text="Enter a symbol, a number of shares and the average price you paid.", fg=DOWN)
+            return
+        self.form_msg.configure(text=f"Looking up {text.upper()}…", fg=FAINT)
+
+        def resolve():
+            sym = text.upper()
+            quotes = fetch_quotes([sym]) if TICKER_RE.match(sym) else {}
+            if sym not in quotes:
+                sym = search_symbol(text)[0]
+            info = fetch_info(sym)
+            return sym, info.get("shortName") or info.get("longName") or ""
+
+        def done(result):
+            sym, name = result
+            self.app.portfolio.set_holding(sym, name, shares, cost)
+            for entry in (self.sym_entry, self.shares_entry, self.cost_entry):
+                entry.clear()
+            self.form_msg.configure(text=f"Saved {sym}: {shares:g} shares at {fmt_money(cost)}.", fg=UP)
+
+        self.app.worker.run(resolve, done,
+                            lambda e: self.form_msg.configure(text=f"Couldn't find “{text}”.", fg=DOWN))
+
+    def _edit(self, holding):
+        self.sym_entry.set(holding["symbol"])
+        self.shares_entry.set(f"{holding['shares']:g}")
+        self.cost_entry.set(f"{holding['cost']:g}")
+        self.form_msg.configure(text=f"Editing {holding['symbol']} — change the numbers and press Save holding.",
+                                fg=FAINT)
+        self.scroller.to_top()
+
+    # --- rendering -------------------------------------------------------------------
+    def _rows(self):
+        quotes, infos = self.data["quotes"], self.data["infos"]
+        rows = []
+        for h in self.app.portfolio.items:
+            q, info = quotes.get(h["symbol"]), infos.get(h["symbol"], {})
+            price = q["last"] if q else None
+            value = price * h["shares"] if price else None
+            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0
+            kind = info.get("quoteType")
+            rows.append({**h, "price": price, "value": value,
+                         "day": q["change"] * h["shares"] if q else None,
+                         "day_pct": q["pct"] if q else None,
+                         "gain": value - h["shares"] * h["cost"] if value is not None else None,
+                         "gain_pct": (price / h["cost"] - 1) * 100 if price and h["cost"] else None,
+                         "dividend": rate, "income": rate * h["shares"],
+                         "sector": "ETFs & funds" if kind in ("ETF", "MUTUALFUND") else
+                                   "Crypto" if kind == "CRYPTOCURRENCY" else info.get("sector") or "Other"})
+        return rows
+
+    def _render(self):
+        rows = self._rows()
+        priced = [r for r in rows if r["value"] is not None]
+        total = sum(r["value"] for r in priced)
+        cost = sum(r["shares"] * r["cost"] for r in priced)
+        day = sum(r["day"] for r in priced)
+        income = sum(r["income"] for r in rows)
+        start = total - day
+        set_card = lambda key, value, sub, color=None: (self.summary[key][0].configure(text=value, fg=color or INK),
+                                                         self.summary[key][1].configure(text=sub))
+        set_card("Total value", fmt_money(total), f"{len(rows)} holding{'s' if len(rows) != 1 else ''} · "
+                                                  f"cost {fmt_money(cost, decimals=0)}")
+        set_card("Today", fmt_money(day, signed=True), fmt_pct(day / start * 100 if start else None), trend_color(day))
+        set_card("Total gain", fmt_money(total - cost, signed=True),
+                 fmt_pct((total / cost - 1) * 100 if cost else None), trend_color(total - cost))
+        set_card("Yearly dividends", fmt_money(income), f"{income / total * 100:.2f}% yield on value" if total else " ")
+        self._render_table(rows, total)
+        self._draw_allocation(rows, total)
+        self._render_dividends(rows, cost)
+
+    def _render_table(self, rows, total):
+        t = self.table
+        for w in t.winfo_children():
+            w.destroy()
+        header = tk.Frame(t, bg=SURFACE)
+        header.pack(fill="x")
+        for i, (title, width, stretch, anchor) in enumerate(self.COLUMNS):
+            header.columnconfigure(i, minsize=S(width), weight=stretch)
+            label(header, title, "eyebrow", fg=FAINT).grid(row=0, column=i, sticky=anchor, padx=S(8), pady=(S(10), S(8)))
+        for r in rows:
+            divider(t)
+            row = tk.Frame(t, bg=SURFACE)
+            row.pack(fill="x")
+            for i, (_, width, stretch, _) in enumerate(self.COLUMNS):
+                row.columnconfigure(i, minsize=S(width), weight=stretch)
+            gain_text = (f"{fmt_money(r['gain'], signed=True)} ({fmt_pct(r['gain_pct'])})"
+                         if r["gain"] is not None else "…")
+            cells = [(r["symbol"], "body_semi", INK), (r.get("name") or "", "body", MUTED),
+                     (f"{r['shares']:,g}", "body", INK), (fmt_money(r["cost"]), "body", MUTED),
+                     (fmt_price(r["price"]) if r["price"] else "…", "body", INK),
+                     (fmt_money(r["value"]) if r["value"] is not None else "…", "body_semi", INK),
+                     (fmt_money(r["day"], signed=True) if r["day"] is not None else "", "body", trend_color(r["day"])),
+                     (gain_text, "body", trend_color(r["gain"])),
+                     (f"{r['value'] / total * 100:.1f}%" if r["value"] and total else "", "small", MUTED)]
+            for i, (text, font, fg) in enumerate(cells):
+                label(row, text, font, fg=fg).grid(row=0, column=i, sticky=self.COLUMNS[i][3], padx=S(8), pady=S(11))
+            actions = tk.Frame(row, bg=SURFACE)
+            actions.grid(row=0, column=9, sticky="e", padx=S(8))
+            edit = label(actions, "✎", "body", fg=FAINT, cursor="hand2")
+            edit.pack(side="left", padx=(0, S(10)))
+            remove = label(actions, "✕", "body", fg=FAINT, cursor="hand2")
+            remove.pack(side="left")
+            make_clickable(row, lambda s=r["symbol"]: self.app.open_symbol(s))
+            for w, cmd in ((edit, lambda h=r: self._edit(h)), (remove, lambda s=r["symbol"]: self.app.portfolio.remove(s))):
+                w.unbind("<Button-1>")
+                w.bind("<Button-1>", lambda e, c=cmd: c())
+            row.bind("<Enter>", lambda e, s=r["symbol"]: prefetch(s), add="+")
+            add_hover(row, lambda rw=row: set_bg(rw, SAND), lambda rw=row: set_bg(rw, SURFACE))
+
+    def _set_alloc(self, mode):
+        self.alloc_mode = mode
+        if self.data:
+            rows = self._rows()
+            self._draw_allocation(rows, sum(r["value"] for r in rows if r["value"]))
+
+    def _draw_allocation(self, rows, total):
+        fig = self.alloc_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(SURFACE)
+        groups = {}
+        for r in rows:
+            if r["value"]:
+                key = r["symbol"] if self.alloc_mode == "Holdings" else r["sector"]
+                groups[key] = groups.get(key, 0) + r["value"]
+        items = sorted(groups.items(), key=lambda kv: kv[1], reverse=True)
+        if len(items) > 7:
+            items = items[:6] + [("Other", sum(v for _, v in items[6:]))]
+        if not items or not total:
+            self.alloc_canvas.draw_idle()
+            return
+        wedges, _ = ax.pie([v for _, v in items], colors=PIE_COLORS[:len(items)], startangle=90, counterclock=False,
+                           wedgeprops=dict(width=0.36, edgecolor=SURFACE, linewidth=2))
+        ax.text(0, 0, f"{fmt_money(total, decimals=0)}\ntotal", ha="center", va="center", fontsize=10, color=INK)
+        ax.legend(wedges, [f"{k}   {v / total * 100:.1f}%" for k, v in items], loc="center left",
+                  bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8.5, labelcolor=MUTED)
+        ax.set_aspect("equal")
+        fig.subplots_adjust(left=0.0, right=0.6, top=0.97, bottom=0.03)
+        self.alloc_canvas.draw_idle()
+
+    def _set_perf_range(self, range_key):
+        self.perf_range = range_key
+        self._draw_performance()
+
+    def _draw_performance(self):
+        self.perf_loader.hide()
+        df = self.history
+        if df is None or df.empty:
+            return
+        shares = {h["symbol"]: h["shares"] for h in self.app.portfolio.items}
+        cols = [c for c in shares if c in df]
+        if not cols or "^GSPC" not in df:
+            return
+        last = df.index[-1]
+        spans = {"1M": 30, "6M": 182, "1Y": 365, "5Y": None}
+        if self.perf_range == "YTD":
+            part = df[df.index >= last.replace(month=1, day=1, hour=0, minute=0, second=0)]
+        elif spans[self.perf_range]:
+            part = df[df.index >= last - pd.Timedelta(days=spans[self.perf_range])]
+        else:
+            part = df
+        part = part[cols + ["^GSPC"]].dropna()
+        if len(part) < 2:
+            return
+        value = sum(part[c] * shares[c] for c in cols)
+        mine = (value / value.iloc[0] - 1) * 100
+        spx = (part["^GSPC"] / part["^GSPC"].iloc[0] - 1) * 100
+        fig = self.perf_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        style_axes(ax, price_on_right=True)
+        ax.set_facecolor(SURFACE)
+        x = np.arange(len(part))
+        ax.plot(x, mine.to_numpy(), color=ACCENT, linewidth=2, label=f"Your portfolio  {mine.iloc[-1]:+.1f}%")
+        ax.plot(x, spx.to_numpy(), color=FAINT, linewidth=1.5, label=f"S&P 500  {spx.iloc[-1]:+.1f}%")
+        ax.axhline(0, color=BORDER, linewidth=0.8)
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:+.0f}%"))
+        ax.set_xlim(0, len(x) - 1)
+        set_index_ticks(ax, part.index, self.perf_range)
+        ax.legend(loc="upper left", frameon=False, fontsize=8.5, labelcolor=MUTED)
+        fig.subplots_adjust(left=0.02, right=0.9, top=0.96, bottom=0.12)
+        self.perf_canvas.draw_idle()
+
+    def _render_dividends(self, rows, cost):
+        box = self.div_box
+        for w in box.winfo_children():
+            w.destroy()
+        payers = [r for r in rows if r["dividend"]]
+        if not payers:
+            label(box, "None of your holdings currently pay a dividend.", "body", fg=FAINT).pack(anchor="w",
+                                                                                               pady=S(14), padx=S(6))
+            return
+        grid = tk.Frame(box, bg=SURFACE)
+        grid.pack(fill="x")
+        heads = [("", "w"), ("PER SHARE / YEAR", "e"), ("SHARES", "e"), ("YEARLY INCOME", "e"), ("YIELD ON COST", "e")]
+        for c, (h, anchor) in enumerate(heads):
+            grid.columnconfigure(c, weight=1 if c else 0, minsize=S(90))
+            label(grid, h, "eyebrow", fg=FAINT).grid(row=0, column=c, sticky=anchor, padx=S(8), pady=(S(8), S(6)))
+        for i, r in enumerate(sorted(payers, key=lambda r: r["income"], reverse=True), start=1):
+            vals = [(r["symbol"], "body_semi", INK), (fmt_money(r["dividend"]), "body", INK),
+                    (f"{r['shares']:,g}", "body", MUTED), (fmt_money(r["income"]), "body_semi", UP),
+                    (f"{r['dividend'] / r['cost'] * 100:.2f}%" if r["cost"] else "—", "body", MUTED)]
+            for c, (text, font, fg) in enumerate(vals):
+                label(grid, text, font, fg=fg).grid(row=i, column=c, sticky=heads[c][1], padx=S(8), pady=S(6))
+        total = sum(r["income"] for r in payers)
+        divider(box, pady=(S(6), 0))
+        foot = tk.Frame(box, bg=SURFACE)
+        foot.pack(fill="x", pady=S(8))
+        label(foot, f"About {fmt_money(total)} a year · {fmt_money(total / 12)} a month on average", "body_semi",
+              fg=UP).pack(side="right", padx=S(8))
+
+    def _screenshot_allocation(self):
+        save_screenshot(self.app, figure_image(self.alloc_fig), "Portfolio allocation",
+                        chart_caption(f"Portfolio allocation by {self.alloc_mode.lower()}"))
+
+    def _screenshot_performance(self):
+        save_screenshot(self.app, figure_image(self.perf_fig), "Portfolio performance",
+                        chart_caption("Portfolio vs S&P 500", self.perf_range))
+
+
+# -------------------------------------------------------------- Calendar ------
+class CalendarPage(Page):
+    refresh_ms = 30 * 60_000
+    FILTERS = {"All": None, "Earnings": "earnings", "Dividends": "dividend", "The Fed": "fed", "Economy": "economy"}
+
+    @staticmethod
+    def type_style(kind):
+        return {"earnings": ("EARNINGS", ACCENT, ACCENT_SOFT), "dividend": ("DIVIDEND", UP, UP_SOFT),
+                "fed": ("THE FED", "#5B7FA6", blend("#5B7FA6", SURFACE, 0.85)),
+                "economy": ("ECONOMY", FAIR, FAIR_SOFT)}[kind]
+
+    def build(self):
+        self.result, self.filter = None, None
+        self.scroller = ScrollFrame(self)
+        self.scroller.pack(fill="both", expand=True)
+        wrap = tk.Frame(self.scroller.inner, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=S(56), pady=(0, S(40)))
+        head = self.page_header(wrap, "Calendar", "Earnings, dividends, Fed meetings and key economic reports "
+                                                  "for the next four months.")
+        RoundButton(head, "Refresh", self.reload, kind="ghost").pack(side="right", anchor="s")
+        self.chips = ChipGroup(wrap, list(self.FILTERS), self._set_filter, value="All")
+        self.chips.pack(anchor="w", pady=(0, S(18)))
+        cols = tk.Frame(wrap, bg=BG)
+        cols.pack(fill="both", expand=True)
+        cols.columnconfigure(0, weight=3, uniform="cal")
+        cols.columnconfigure(1, weight=1, uniform="cal")
+        self.list = tk.Frame(cols, bg=BG)
+        self.list.grid(row=0, column=0, sticky="nsew", padx=(0, S(24)))
+        side = tk.Frame(cols, bg=BG)
+        side.grid(row=0, column=1, sticky="nsew")
+        nxt = card(side)
+        nxt.pack(fill="x")
+        nbox = tk.Frame(nxt, bg=SURFACE)
+        nbox.pack(fill="both", expand=True, padx=S(20), pady=S(18))
+        label(nbox, "Coming Up", "h2").pack(anchor="w", pady=(0, S(8)))
+        self.next_box = tk.Frame(nbox, bg=SURFACE)
+        self.next_box.pack(fill="x")
+        about = tk.Frame(side, bg=SAND)
+        about.pack(fill="x", pady=(S(18), 0))
+        abox = tk.Frame(about, bg=SAND)
+        abox.pack(fill="both", expand=True, padx=S(20), pady=S(18))
+        label(abox, "ABOUT THIS CALENDAR", "eyebrow", fg=ACCENT).pack(anchor="w")
+        self.about = wrap_label(abox, "", "small", fg=MUTED)
+        self.about.pack(fill="x", pady=(S(6), 0))
+        for w in (self.app.watchlist, self.app.portfolio):
+            w.listeners.append(lambda: self.loaded and self.refresh())
+
+    def first_load(self):
+        self.refresh()
+
+    def _symbols(self):
+        return list(dict.fromkeys(self.app.portfolio.symbols + self.app.watchlist.symbols))
+
+    def refresh(self):
+        symbols = self._symbols()
+        if self.result is None:
+            show_skeleton(self.list, blocks=6, lines=2, pady=20)
+        self.app.worker.run(lambda: fetch_calendar(symbols), self._got,
+                            lambda e: self._message("Couldn't load the calendar. Check your connection."))
+
+    def reload(self):
+        with _CACHE_LOCK:
+            for key in [k for k in _CACHE if k[0] in ("economic-calendar", "calendar")]:
+                del _CACHE[key]
+        self.refresh()
+
+    def _message(self, text):
+        for w in self.list.winfo_children():
+            w.destroy()
+        label(self.list, text, "body", fg=DOWN).pack(anchor="w", pady=S(12))
+
+    def _got(self, result):
+        self.result = result
+        self._render()
+
+    def _set_filter(self, choice):
+        self.filter = self.FILTERS[choice]
+        self._render()
+
+    def _render(self):
+        events = [e for e in self.result["events"] if self.filter in (None, e["type"])]
+        for w in self.list.winfo_children():
+            w.destroy()
+        if not events:
+            label(self.list, "Nothing scheduled in this category for the next few months.", "body",
+                  fg=FAINT).pack(anchor="w", pady=S(12))
+        today = datetime.now().date()
+        current = None
+        for e in events[:160]:
+            day = e["date"].date()
+            if day != current:
+                current = day
+                when = (e["date"].strftime("%A, %B %d").replace(" 0", " "))
+                delta = (day - today).days
+                rel = "Today" if delta == 0 else "Tomorrow" if delta == 1 else f"in {delta} days"
+                head = tk.Frame(self.list, bg=BG)
+                head.pack(fill="x", pady=(S(18), S(4)))
+                label(head, when, "card_title").pack(side="left")
+                label(head, rel, "small", fg=ACCENT if delta <= 1 else FAINT).pack(side="left", padx=S(10))
+                divider(self.list)
+            self._event_row(e)
+        self._render_next()
+        n = len(self._symbols())
+        failed = self.result["failed"]
+        self.about.configure(text=f"Earnings and dividends are shown for the {n} stocks in your watchlist and "
+                                  "portfolio. Fed meetings come from the Federal Reserve; CPI and jobs reports from "
+                                  "the Bureau of Labor Statistics; GDP and PCE inflation from the Bureau of Economic "
+                                  "Analysis; retail sales from the Census Bureau. Release times are Eastern."
+                                  + (f"\n\nCouldn't reach: {', '.join(failed)}." if failed else ""))
+
+    def _event_row(self, e):
+        word, fg, soft = self.type_style(e["type"])
+        row = tk.Frame(self.list, bg=BG)
+        row.pack(fill="x")
+        inner = tk.Frame(row, bg=BG)
+        inner.pack(fill="x", padx=S(6), pady=S(9))
+        pill = label(inner, word, "eyebrow", fg=fg, bg=soft, width=10, pady=S(3))
+        pill.keep_bg = True
+        pill.pack(side="left", anchor="n", padx=(0, S(14)))
+        text = tk.Frame(inner, bg=BG)
+        text.pack(side="left", fill="x", expand=True)
+        label(text, e["title"], "body_semi").pack(anchor="w")
+        if e["detail"]:
+            label(text, e["detail"], "small", fg=MUTED).pack(anchor="w")
+        if e.get("time"):
+            label(inner, e["time"], "small", fg=FAINT).pack(side="right", anchor="n")
+        if e.get("symbol"):
+            make_clickable(row, lambda s=e["symbol"]: self.app.open_symbol(s))
+            add_hover(row, lambda: set_bg(row, SAND), lambda: set_bg(row, BG))
+
+    def _render_next(self):
+        for w in self.next_box.winfo_children():
+            w.destroy()
+        today = datetime.now().date()
+        picks = []
+        for kind, title in (("fed", "Fed decision"), ("CPI", "Inflation (CPI)"), ("Jobs", "Jobs report"),
+                            ("GDP", "GDP"), ("earnings", "Next earnings")):
+            for e in self.result["events"]:
+                if (e["type"] == kind) or (kind in ("CPI", "Jobs", "GDP") and e["title"].startswith(
+                        {"CPI": "Consumer Price", "Jobs": "Jobs", "GDP": "GDP"}[kind])):
+                    picks.append((title, e))
+                    break
+        if not picks:
+            label(self.next_box, "Nothing scheduled.", "small", fg=FAINT).pack(anchor="w")
+        for i, (title, e) in enumerate(picks):
+            if i:
+                divider(self.next_box)
+            row = tk.Frame(self.next_box, bg=SURFACE)
+            row.pack(fill="x", pady=S(7))
+            label(row, title.upper(), "eyebrow", fg=MUTED).pack(anchor="w")
+            delta = (e["date"].date() - today).days
+            rel = "today" if delta == 0 else "tomorrow" if delta == 1 else f"in {delta} days"
+            label(row, e["date"].strftime("%a, %b %d").replace(" 0", " ") + f"  ·  {rel}", "body_semi").pack(anchor="w")
+            if e["type"] == "earnings":
+                label(row, e["title"].replace(" earnings", ""), "small", fg=FAINT).pack(anchor="w")
+
+
 # -----------------------------------------------------------------------------
 # 9. The application window
 # -----------------------------------------------------------------------------
 class App(tk.Tk):
-    PAGES = [("Home", HomePage), ("Markets", MarketsPage), ("News", NewsPage),
-             ("Watchlist", WatchlistPage), ("Bond Market", BondPage)]
+    PAGES = [("Home", HomePage), ("Markets", MarketsPage), ("News", NewsPage), ("Watchlist", WatchlistPage),
+             ("Portfolio", PortfolioPage), ("Calendar", CalendarPage), ("Bond Market", BondPage)]
 
     def __init__(self):
         global SCALE
         super().__init__()
         SCALE = self.winfo_fpixels("1i") / 96
         self.settings = load_settings()
+        apply_theme(self.settings.get("theme") or ("dark" if windows_prefers_dark() else "light"))
+        self.restart = False
+        self.suggesters = []
         self.title(APP_NAME)
         self.configure(bg=BG)
         self._size_window()
@@ -3777,6 +5507,8 @@ class App(tk.Tk):
         self.visited = set()   # headlines opened this session are shown in gray
         self.news = SharedFetch(self.worker, fetch_all_news, max_age=10 * 60)
         self.milton = SharedFetch(self.worker, fetch_milton_articles, max_age=30 * 60)
+        self.portfolio = PortfolioStore()
+        self.alerts = AlertStore()
 
         self._build_header()
         self._build_footer()
@@ -3806,6 +5538,9 @@ class App(tk.Tk):
                          ("<Home>", ("moveto", 0)), ("<End>", ("moveto", 1))):
             self.bind_all(key, lambda e, h=how: self._key(e, lambda: self._scroll_page(h), typing_blocks=True))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(5000, self._check_alerts)
+        self.bind("<Configure>", lambda e: e.widget is self and self._close_suggestions())
+        set_dark_titlebar(self, THEME == "dark")
         self._tick()
 
     # --- window setup -----------------------------------------------------------
@@ -3846,7 +5581,7 @@ class App(tk.Tk):
 
         # logo — flattened onto the cream background so it blends into the header
         try:
-            logo = Image.open(resource_path("assets", "logo.png")).convert("RGBA")
+            logo = themed_logo()
             logo = Image.alpha_composite(Image.new("RGBA", logo.size, BG), logo).convert("RGB")
             h = S(46)
             logo = logo.resize((int(logo.width * h / logo.height), h), Image.LANCZOS)
@@ -3862,7 +5597,7 @@ class App(tk.Tk):
         self.nav_links = {}
         for name, _ in self.PAGES:
             link = label(nav, name, "nav", cursor="hand2")
-            link.pack(side="left", padx=S(18))
+            link.pack(side="left", padx=S(14))
             link.bind("<Button-1>", lambda e, n=name: self.navigate(n))
             link.bind("<Enter>", lambda e, l=link: l.configure(fg=ACCENT))
             link.bind("<Leave>", lambda e, n=name, l=link: l.configure(fg=ACCENT if n == self._active_nav() else INK))
@@ -3871,6 +5606,7 @@ class App(tk.Tk):
         right = tk.Frame(bar, bg=BG)
         right.grid(row=0, column=2, sticky="e")
         RoundButton(right, "Subscribe", lambda: open_link(SITE_URL), radius=12).pack(side="right")
+        ThemeToggle(right, self.toggle_theme).pack(side="right", padx=(0, S(14)))
         divider(header)
 
     def _build_footer(self):
@@ -3891,10 +5627,11 @@ class App(tk.Tk):
         keys = label(inner, "Shortcuts (F1)", "small", fg=ACCENT, cursor="hand2")
         keys.pack(side="right", padx=(0, S(24)))
         keys.bind("<Button-1>", lambda e: ShortcutsDialog.open(self))
-        contact = label(inner, f"© {datetime.now().year} The Milton Review  ·  Not financial advice  ·  "
-                               f"{CONTACT_EMAIL}", "small", fg=FAINT, cursor="hand2")
-        contact.pack(side="right", padx=S(24))
-        contact.bind("<Button-1>", lambda e: open_link(f"mailto:{CONTACT_EMAIL}"))
+        idea = label(inner, "Send an idea", "small", fg=ACCENT, cursor="hand2")
+        idea.pack(side="right", padx=(0, S(18)))
+        idea.bind("<Button-1>", lambda e: FeedbackDialog.open(self))
+        label(inner, f"© {datetime.now().year} The Milton Review  ·  Not financial advice", "small",
+              fg=FAINT).pack(side="right", padx=S(24))
 
     # --- navigation ---------------------------------------------------------------
     def show(self, name):
@@ -3953,7 +5690,7 @@ class App(tk.Tk):
     def go_back(self):
         if self.current == "Source":
             self.navigate("News")
-        elif self.current == "Markets" and self.pages["Markets"].mode == "detail":
+        elif self.current == "Markets" and self.pages["Markets"].mode != "overview":
             self.pages["Markets"].show_overview()
         elif isinstance(self.focus_get(), tk.Entry):
             self.focus_set()
@@ -3986,6 +5723,61 @@ class App(tk.Tk):
         else:
             scroller.canvas.yview_moveto(how[1])
 
+    # --- price alerts ------------------------------------------------------------------
+    def _check_alerts(self):
+        """Every minute: fetch prices for active alerts and fire any that are hit."""
+        active = self.alerts.active()
+        if active:
+            symbols = list(dict.fromkeys(a["symbol"] for a in active))
+            self.worker.run(lambda: fetch_quotes(symbols), self._evaluate_alerts, lambda e: None)
+        self.after(60_000, self._check_alerts)
+
+    def _evaluate_alerts(self, quotes):
+        fired = []
+        for a in self.alerts.active():
+            q = quotes.get(a["symbol"])
+            if q and alert_hit(a, q):
+                a["triggered"] = datetime.now().isoformat(timespec="minutes")
+                a["price"] = q["last"]
+                fired.append((a, q))
+        if not fired:
+            return
+        self.alerts.save()
+        for a, q in fired:
+            title = f"{a['symbol']} price alert"
+            body = f"{describe_alert(a)} — now {fmt_price(q['last'])} ({fmt_pct(q['pct'])} today)"
+            windows_notify(title, body)
+            self.show_banner(f"🔔  {title}: {body}", "View", lambda s=a["symbol"]: self.open_symbol(s))
+
+    def show_banner(self, text, action_text=None, action=None):
+        """A dismissable strip under the header for things that need attention."""
+        if getattr(self, "banner", None) is not None:
+            self.banner.destroy()
+        bar = tk.Frame(self, bg=ACCENT_SOFT)
+        bar.pack(fill="x", before=self.body)
+        inner = tk.Frame(bar, bg=ACCENT_SOFT)
+        inner.pack(fill="x", padx=S(40), pady=S(8))
+        label(inner, text, "body_semi", fg=INK, bg=ACCENT_SOFT).pack(side="left")
+        close = label(inner, "✕", "body", fg=MUTED, bg=ACCENT_SOFT, cursor="hand2")
+        close.pack(side="right")
+        close.bind("<Button-1>", lambda e: bar.destroy())
+        if action:
+            link = label(inner, action_text + " →", "body_semi", fg=ACCENT, bg=ACCENT_SOFT, cursor="hand2")
+            link.pack(side="right", padx=S(16))
+            link.bind("<Button-1>", lambda e: (bar.destroy(), action()))
+        self.banner = bar
+        self.after(30_000, lambda: bar.winfo_exists() and bar.destroy())
+
+    def toggle_theme(self):
+        """Switch light/dark: remember the choice and rebuild the window in the new colours."""
+        self.settings["theme"] = "light" if THEME == "dark" else "dark"
+        self.restart = True
+        self._on_close()
+
+    def _close_suggestions(self):
+        for suggester in self.suggesters:
+            suggester.close()
+
     def _on_close(self):
         self.settings["zoomed"] = self.state() == "zoomed"
         if self.state() == "normal":
@@ -4005,6 +5797,7 @@ class App(tk.Tk):
 
     # --- events -----------------------------------------------------------------------
     def _on_wheel(self, event):
+        self._close_suggestions()
         try:
             widget = self.winfo_containing(event.x_root, event.y_root)
         except (KeyError, tk.TclError):
@@ -4047,6 +5840,9 @@ def main():
         pass
 
     app.mainloop()
+    while app.restart:     # switching light/dark rebuilds the window
+        app = App()
+        app.mainloop()
 
 
 if __name__ == "__main__":

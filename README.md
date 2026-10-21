@@ -1,9 +1,23 @@
-# Insight by Milton — v6 (Speed & Quality of Life)
+# Insight by Milton — v7 (Portfolio, Calendar & Dark Mode)
 
 A desktop markets companion for **The Milton Review**, styled after
 [themiltonreview.net](https://www.themiltonreview.net).
 
-## What's new in v6
+## What's new in v7
+
+- **Portfolio** tab — enter shares and average cost; see total value, today's change, total gain,
+  an allocation donut (by holding or sector), performance vs the S&P 500 and estimated dividend income.
+- **Calendar** tab — earnings and dividend dates for your watchlist and portfolio, Fed rate decisions,
+  CPI, the jobs report, GDP, PCE inflation and retail sales, straight from the official schedules.
+- **Price alerts** — "Set price alert" on any stock (above / below / % move); Windows notifications
+  while the app is open (even minimized), plus an in-app banner. Listed on the Watchlist page.
+- **Compare stocks** — up to 5 symbols on one % change chart with key numbers side by side.
+- **Search suggestions** — a dropdown of matching stocks as you type in the Markets search.
+- **Feedback box** — "Send an idea" (footer) and "Have an idea?" (Home) open a ready-to-send email.
+- **Dark mode** — follows Windows on first launch; the sun/moon button in the header switches it.
+- **Loading animations** — spinners over charts and pulsing placeholders while content loads.
+
+## What was new in v6
 
 - **Much faster charts** — 1M through 5Y share one cached download, so switching ranges takes about
   0.15 s; MAX dropped from ~5 s to ~0.5 s; volume is drawn as one shape; prices and company details
@@ -44,7 +58,9 @@ A desktop markets companion for **The Milton Review**, styled after
 - **Markets** — market overview, plus per-stock charts (1D–MAX, moving averages, volume, hover readout),
   key statistics, colour-coded fundamental analysis with a criteria popup, company profile and headlines.
 - **News** — 16 outlets, topic chips, instant filtering, source pages with bias scale.
-- **Watchlist** — saved symbols with live prices and sparklines.
+- **Watchlist** — saved symbols with live prices and sparklines, plus your price alerts.
+- **Portfolio** — holdings, gains, allocation, performance vs S&P 500, dividend income.
+- **Calendar** — earnings, dividends, Fed meetings and economic reports.
 - **Bond Market** — Treasury yield curve, spreads and recession signals.
 
 ## News sources and political alignment
