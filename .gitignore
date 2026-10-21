@@ -32,5 +32,7 @@ env/
 # ── Demo capture helpers ─────────────────────────────────────────────────────
 /demo.gif
 /demo_frame*.png
+/demo_check.png
+/demo-dark_check.png
 /insightByMilton-v*-windows.zip
 capture_demo.py

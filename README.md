@@ -20,7 +20,10 @@
 <br>
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Insight by Milton demo — Home, Markets, News, Portfolio and Bond Market" width="900">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.gif">
+    <img src="assets/demo.gif" alt="Insight by Milton demo — Home, Markets, News, Portfolio and Bond Market" width="900">
+  </picture>
 </p>
 
 ---
