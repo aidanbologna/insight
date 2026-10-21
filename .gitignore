@@ -30,6 +30,7 @@ env/
 .venv/
 
 # ── Demo capture helpers ─────────────────────────────────────────────────────
-demo.gif
-demo_frame*.png
-insightByMilton-v*-windows.zip
+/demo.gif
+/demo_frame*.png
+/insightByMilton-v*-windows.zip
+capture_demo.py
