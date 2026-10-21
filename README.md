@@ -1,8 +1,8 @@
-# Insight by Milton — v2 (Milton Redesign)
+# Insight by Milton — v3 (Fundamentals)
 
-A desktop markets companion for **The Milton Review**, redesigned to match the look of
-[themiltonreview.net](https://www.themiltonreview.net): cream background, serif headlines and the
-terracotta accent.
+A desktop markets companion for **The Milton Review**, styled after
+[themiltonreview.net](https://www.themiltonreview.net). Version 3 adds colour-coded
+**fundamental analysis** for individual stocks.
 
 ## Features
 
@@ -17,6 +17,18 @@ terracotta accent.
   refreshes every minute.
 - **Bond Market** — live U.S. Treasury yield curve vs 1 month / 1 year ago, yields table,
   2s10s and 3M–10Y spread signals with Normal/Inverted badges, and a two-year spread history.
+- **Fundamental Analysis (new in v3)** — on the Markets page for individual stocks: 18 metrics in four
+  cards (Valuation, Profitability, Growth, Health & Dividends), each colour-coded green / yellow / red
+  against fixed rules of thumb, with a good/fair/weak tally, hover tooltips, and a
+  "How is each value judged?" popup that explains every metric and its cutoffs.
+
+## How fundamentals are judged
+
+Each value is compared with a fixed, widely used rule of thumb:
+**green = good, yellow = fair, red = weak.** Losses and negative values show red; values Yahoo
+Finance doesn't report show a gray "—" and aren't counted. The full list of cutoffs is in the
+app's "How is each value judged?" popup and in the `FUNDAMENTALS` table near the top of
+`insightByMilton.py`, so the thresholds are easy to adjust.
 
 ## Run it
 
@@ -37,7 +49,7 @@ The app is created in `dist/insightByMilton/insightByMilton.exe`.
 
 ## Data sources
 
-- Yahoo Finance (`yfinance`) — prices, charts, statistics, movers and headlines
+- Yahoo Finance (`yfinance`) — prices, charts, statistics, fundamentals, movers and headlines
 - U.S. Department of the Treasury — daily par yield curve CSV (cached for offline use)
 - The Milton Review RSS feed — https://www.themiltonreview.net/blog-feed.xml
 

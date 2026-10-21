@@ -62,6 +62,14 @@ UP = "#2F7D4F"
 UP_SOFT = "#E4F0E7"
 DOWN = "#B4473A"
 DOWN_SOFT = "#F6E2DE"
+FAIR = "#A0721A"         # amber "yellow" that stays readable on cream
+FAIR_SOFT = "#F8EDD3"
+RATING_STYLE = {          # rating -> (text colour, pill colour, word)
+    "good": (UP, UP_SOFT, "Good"),
+    "fair": (FAIR, FAIR_SOFT, "Fair"),
+    "weak": (DOWN, DOWN_SOFT, "Weak"),
+    None: (FAINT, SAND, "Not rated"),
+}
 
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
@@ -118,6 +126,82 @@ RANGES = {
 }
 RANGE_WORDS = {"1D": "today", "5D": "past 5 days", "1M": "past month", "6M": "past 6 months",
                "YTD": "year to date", "1Y": "past year", "5Y": "past 5 years", "MAX": "all time"}
+
+# Fundamental analysis: every metric, how it's shown and how it's judged.
+#   key       Yahoo Finance field (a tuple means "first one that exists")
+#   fmt       x = multiple, ratio = plain number, pct = percentage, money = dollars
+#   better    "lower" or "higher" is better
+#   cuts      (a, b) band boundaries.  lower is better:  good < a <= fair <= b < weak
+#                                      higher is better: weak < a <= fair <= b < good
+#   negative  red label shown when the value is below zero
+#   zero      gray label shown (and not rated) when the value is exactly zero
+FUNDAMENTALS = [
+    ("Valuation", [
+        {"name": "P/E (TTM)", "key": "trailingPE", "fmt": "x", "better": "lower", "cuts": (15, 25),
+         "negative": "Loss", "loss_eps": "trailingEps",
+         "about": "Share price divided by the last 12 months of earnings per share — how many dollars "
+                  "investors pay for each $1 of profit."},
+        {"name": "Forward P/E", "key": "forwardPE", "fmt": "x", "better": "lower", "cuts": (15, 25),
+         "negative": "Loss", "loss_eps": "forwardEps",
+         "about": "Like P/E, but using analysts' expected earnings for the next 12 months."},
+        {"name": "PEG ratio", "key": ("trailingPegRatio", "pegRatio"), "fmt": "ratio", "better": "lower",
+         "cuts": (1, 2), "negative": "Negative",
+         "about": "P/E divided by the expected earnings growth rate. It adjusts the P/E for how fast "
+                  "profits are growing; around 1 is often considered fairly priced."},
+        {"name": "Price / Book", "key": "priceToBook", "fmt": "x", "better": "lower", "cuts": (3, 5),
+         "negative": "Negative",
+         "about": "Share price divided by book value per share (assets minus liabilities). Asset-light "
+                  "companies like software firms naturally run high."},
+        {"name": "Price / Sales", "key": "priceToSalesTrailing12Months", "fmt": "x", "better": "lower",
+         "cuts": (2, 5),
+         "about": "Market value divided by the last 12 months of revenue. Useful for companies with "
+                  "little or no profit yet."},
+        {"name": "EV / EBITDA", "key": "enterpriseToEbitda", "fmt": "x", "better": "lower", "cuts": (10, 15),
+         "negative": "Negative",
+         "about": "Enterprise value (market value plus debt minus cash) divided by earnings before interest, "
+                  "taxes, depreciation and amortization. Compares companies however they're financed."},
+    ]),
+    ("Profitability", [
+        {"name": "Gross margin", "key": "grossMargins", "fmt": "pct", "better": "higher", "cuts": (0.20, 0.40),
+         "about": "Share of revenue left after the direct cost of making the product or service."},
+        {"name": "Operating margin", "key": "operatingMargins", "fmt": "pct", "better": "higher",
+         "cuts": (0.05, 0.15),
+         "about": "Share of revenue left after all day-to-day costs such as wages, research and marketing."},
+        {"name": "Profit margin", "key": "profitMargins", "fmt": "pct", "better": "higher", "cuts": (0.05, 0.10),
+         "about": "Share of revenue that ends up as net profit after every expense, interest payment and tax."},
+        {"name": "Return on equity", "key": "returnOnEquity", "fmt": "pct", "better": "higher",
+         "cuts": (0.08, 0.15),
+         "about": "Net profit divided by shareholders' equity — how well the company turns owners' money "
+                  "into profit. Heavy debt or buybacks can push it unusually high."},
+        {"name": "Return on assets", "key": "returnOnAssets", "fmt": "pct", "better": "higher",
+         "cuts": (0.02, 0.05),
+         "about": "Net profit divided by everything the company owns — how productive its assets are."},
+    ]),
+    ("Growth", [
+        {"name": "Revenue growth", "key": "revenueGrowth", "fmt": "pct", "better": "higher", "cuts": (0, 0.10),
+         "about": "Change in the latest quarter's revenue compared with the same quarter a year earlier."},
+        {"name": "Earnings growth", "key": "earningsGrowth", "fmt": "pct", "better": "higher", "cuts": (0, 0.10),
+         "about": "Change in the latest quarter's earnings compared with the same quarter a year earlier."},
+    ]),
+    ("Health & Dividends", [
+        {"name": "Debt / Equity", "key": "debtToEquity", "scale": 0.01, "fmt": "ratio", "better": "lower",
+         "cuts": (0.5, 1.5), "negative": "Negative",
+         "about": "Total debt divided by shareholders' equity. Higher means the company leans more on "
+                  "borrowed money. Negative means liabilities exceed assets."},
+        {"name": "Current ratio", "key": "currentRatio", "fmt": "ratio", "better": "higher", "cuts": (1, 1.5),
+         "about": "Assets that turn into cash within a year divided by bills due within a year. Below 1 "
+                  "means short-term bills exceed short-term resources."},
+        {"name": "Quick ratio", "key": "quickRatio", "fmt": "ratio", "better": "higher", "cuts": (0.5, 1),
+         "about": "Like the current ratio but leaves out inventory, counting only the most liquid assets."},
+        {"name": "Free cash flow", "key": "freeCashflow", "fmt": "money", "better": "higher", "cuts": (0, 0),
+         "about": "Cash from operations minus spending on equipment and buildings over the last 12 months — "
+                  "money left over for dividends, buybacks or paying down debt."},
+        {"name": "Payout ratio", "key": "payoutRatio", "fmt": "pct", "better": "lower", "cuts": (0.60, 0.90),
+         "zero": "No dividend",
+         "about": "Share of profit paid out as dividends. Very high payouts can be hard to keep up. "
+                  "Companies that pay no dividend aren't rated."},
+    ]),
+]
 
 # Treasury par yield curve maturities: (short label, CSV column)
 MATURITIES = [("1M", "1 Mo"), ("3M", "3 Mo"), ("6M", "6 Mo"), ("1Y", "1 Yr"), ("2Y", "2 Yr"),
@@ -232,6 +316,52 @@ def market_status():
         nxt += timedelta(days=1)
     when = "today" if nxt.date() == now.date() else nxt.strftime("%A")
     return False, f"U.S. markets closed · opens {when} 9:30 AM ET"
+
+
+def fmt_metric(v, fmt, cutoff=False):
+    if fmt == "pct":
+        return f"{v * 100:g}%" if cutoff else f"{v * 100:.1f}%"
+    if fmt == "money":
+        return ("-$" if v < 0 else "$") + fmt_big(abs(v))
+    if fmt == "x":
+        return f"{v:g}" if cutoff else f"{v:,.1f}"
+    return f"{v:g}" if cutoff else f"{v:,.2f}"
+
+
+def judge_metric(spec, info):
+    """Return (rating, display text). rating is good / fair / weak, or None when it isn't rated."""
+    keys = spec["key"] if isinstance(spec["key"], tuple) else (spec["key"],)
+    v = next((info.get(k) for k in keys if not is_missing(info.get(k))), None)
+    if v is None:
+        eps = info.get(spec.get("loss_eps", ""))
+        if isinstance(eps, (int, float)) and eps < 0:
+            return "weak", spec.get("negative", "Loss")   # Yahoo leaves P/E blank for loss-makers
+        return None, "—"
+    v = float(v) * spec.get("scale", 1)
+    if v == 0 and "zero" in spec:
+        return None, spec["zero"]
+    if v < 0 and "negative" in spec:
+        return "weak", spec["negative"]
+    a, b = spec["cuts"]
+    if spec["better"] == "lower":
+        rating = "good" if v < a else "fair" if v <= b else "weak"
+    else:
+        rating = "good" if v > b else "fair" if v >= a else "weak"
+    return rating, fmt_metric(v, spec["fmt"])
+
+
+def describe_cutoffs(spec):
+    """[(rating, rule text)] used by the criteria popup and the hover tooltips."""
+    a, b = (fmt_metric(c, spec["fmt"], cutoff=True) for c in spec["cuts"])
+    if spec["cuts"][0] == spec["cuts"][1]:
+        return [("good", "Positive"), ("weak", "Negative")]
+    if spec["better"] == "lower":
+        rules = [("good", f"Below {a}"), ("fair", f"{a} – {b}"), ("weak", f"Above {b}")]
+    else:
+        rules = [("good", f"Above {b}"), ("fair", f"{a} – {b}"), ("weak", f"Below {a}")]
+    if "negative" in spec:
+        rules[-1] = ("weak", rules[-1][1] + f" or {spec['negative'].lower()}")
+    return rules
 
 
 # -----------------------------------------------------------------------------
@@ -607,7 +737,12 @@ def label(parent, text="", font="body", fg=INK, bg=None, **kw):
 def wrap_label(parent, text="", font="body", fg=INK, **kw):
     """A left-aligned label that re-wraps its text whenever it is resized."""
     lbl = label(parent, text, font, fg, justify="left", anchor="w", **kw)
-    lbl.bind("<Configure>", lambda e: lbl.configure(wraplength=max(e.width - 4, 50)))
+
+    def rewrap(e):
+        width = max(e.width - 4, 50)
+        if abs(width - int(lbl.cget("wraplength") or 0)) > 2:  # ignore jitter so layouts settle
+            lbl.configure(wraplength=width)
+    lbl.bind("<Configure>", rewrap)
     return lbl
 
 
@@ -916,6 +1051,129 @@ def change_pill(parent, pct, font="small_semi", width=0):
     pill = label(parent, fmt_pct(pct), font, fg=color, bg=soft, padx=S(8), pady=S(2), width=width)
     pill.keep_bg = True
     return pill
+
+
+class Tooltip:
+    """Small dark hint that appears after hovering a widget (and its children) briefly."""
+
+    def __init__(self, widget, text):
+        self.widget, self.text = widget, text
+        self.tip, self.job = None, None
+        add_hover(widget, self._schedule, self._hide)
+        for w in descendants(widget):
+            w.bind("<ButtonPress>", lambda e: self._hide(), add="+")
+
+    def _schedule(self):
+        if self.job is None and self.tip is None:
+            self.job = self.widget.after(350, self._show)
+
+    def _show(self):
+        self.job = None
+        x, y = self.widget.winfo_pointerxy()
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.attributes("-topmost", True)
+        label(self.tip, self.text, "small", fg=BG, bg=INK, justify="left", wraplength=S(320),
+              padx=S(12), pady=S(8)).pack()
+        self.tip.wm_geometry(f"+{x + S(14)}+{y + S(16)}")
+
+    def _hide(self):
+        if self.job:
+            self.widget.after_cancel(self.job)
+            self.job = None
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
+def rating_pill(parent, rating, text, width=10):
+    fg, soft, _ = RATING_STYLE[rating]
+    pill = label(parent, text, "small_semi", fg=fg, bg=soft, padx=S(8), pady=S(2), width=width)
+    pill.keep_bg = True
+    return pill
+
+
+def rating_legend(parent):
+    box = tk.Frame(parent, bg=parent.cget("bg"))
+    for rating in ("good", "fair", "weak"):
+        fg, _, word = RATING_STYLE[rating]
+        dot = tk.Canvas(box, width=S(9), height=S(9), bg=box.cget("bg"), highlightthickness=0)
+        dot.create_oval(1, 1, S(8), S(8), fill=fg, outline="")
+        dot.pack(side="left", padx=(S(10), S(5)))
+        label(box, word, "small", fg=MUTED).pack(side="left")
+    return box
+
+
+class CriteriaDialog(tk.Toplevel):
+    """Popup explaining what every fundamental metric means and how it's colour-coded."""
+    instance = None
+
+    @classmethod
+    def open(cls, app):
+        if cls.instance is not None and cls.instance.winfo_exists():
+            cls.instance.lift()
+            cls.instance.focus_set()
+            return
+        cls.instance = cls(app)
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.title("How fundamentals are judged — Insight by Milton")
+        self.transient(app)
+        w, h = min(S(780), int(app.winfo_width() * 0.9)), min(S(720), int(app.winfo_height() * 0.9))
+        x = app.winfo_rootx() + (app.winfo_width() - w) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(S(560), S(400))
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=S(36), pady=(S(28), S(14)))
+        label(head, "How each value is judged", "page_title").pack(anchor="w")
+        wrap_label(head, "Every value is compared with a fixed rule of thumb that's widely used by investors. "
+                         "What counts as normal differs a lot between industries — a software company and a "
+                         "bank look very different — so treat the colours as a starting point for research, "
+                         "not a verdict. Educational information only, not financial advice.",
+                   "body", fg=MUTED).pack(fill="x", pady=(S(6), S(10)))
+        rating_legend(head).pack(anchor="w")
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(fill="x", side="bottom")
+        tk.Frame(foot, bg=BORDER, height=1).pack(fill="x")
+        RoundButton(foot, "Close", self.destroy, kind="dark").pack(side="right", padx=S(36), pady=S(14))
+
+        scroller = ScrollFrame(self)
+        scroller.pack(fill="both", expand=True)
+        body = tk.Frame(scroller.inner, bg=BG)
+        body.pack(fill="both", expand=True, padx=S(36), pady=(S(4), S(24)))
+        for group, metrics in FUNDAMENTALS:
+            label(body, group.upper(), "eyebrow", fg=ACCENT).pack(anchor="w", pady=(S(22), S(4)))
+            for spec in metrics:
+                divider(body)
+                row = tk.Frame(body, bg=BG)
+                row.pack(fill="x", pady=S(12))
+                rules = tk.Frame(row, bg=BG)
+                rules.pack(side="right", anchor="n")
+                text = tk.Frame(row, bg=BG)
+                text.pack(side="left", fill="x", expand=True, anchor="n", padx=(0, S(24)))
+                label(text, spec["name"], "card_title").pack(anchor="w")
+                wrap_label(text, spec["about"], "small", fg=MUTED).pack(fill="x", pady=(S(2), 0))
+                lines = describe_cutoffs(spec)
+                if "zero" in spec:
+                    lines.append((None, spec["zero"] + " — not counted"))
+                for rating, rule in lines:
+                    line = tk.Frame(rules, bg=BG)
+                    line.pack(anchor="w", pady=S(1))
+                    word = RATING_STYLE[rating][2] if rating else "Gray"
+                    rating_pill(line, rating, word, width=6).pack(side="left")
+                    label(line, rule, "small", width=24, anchor="w").pack(side="left", padx=(S(8), 0))
+        divider(body, pady=(S(10), 0))
+        wrap_label(body, "A gray “—” means Yahoo Finance doesn't report that value for the company. Gray values "
+                         "aren't counted in the good / fair / weak tally.", "small",
+                   fg=FAINT).pack(fill="x", pady=(S(12), 0))
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.focus_set()
 
 
 # -----------------------------------------------------------------------------
@@ -1329,7 +1587,9 @@ class MarketsPage(Page):
         self.canvas.mpl_connect("motion_notify_event", self._on_hover)
         self.canvas.mpl_connect("figure_leave_event", lambda e: self._hide_hover())
 
-        label(main, "Headlines", "h2").pack(anchor="w", pady=(S(28), S(10)))
+        self.fund_section = tk.Frame(main, bg=BG)   # only packed for companies, see _fill_fundamentals
+        self.headlines_title = label(main, "Headlines", "h2")
+        self.headlines_title.pack(anchor="w", pady=(S(28), S(10)))
         self.news_box = tk.Frame(main, bg=BG)
         self.news_box.pack(fill="x")
 
@@ -1446,6 +1706,7 @@ class MarketsPage(Page):
         about = info.get("longBusinessSummary") or ""
         self.about_title.configure(text=f"About {info.get('shortName') or sym}" if about else "")
         self.about_label.configure(text=(about[:520].rsplit(" ", 1)[0] + "…") if len(about) > 520 else about)
+        self._fill_fundamentals(info)
         self._fill_news(data["news"])
         self._update_watch_button()
         self._draw_chart()
@@ -1502,6 +1763,59 @@ class MarketsPage(Page):
             r.pack(fill="x", pady=S(6))
             label(r, k, "small", fg=MUTED).pack(side="left")
             label(r, v, "small_semi").pack(side="right")
+
+    def _fill_fundamentals(self, info):
+        """Colour-coded fundamental analysis cards. Hidden for ETFs, indices, crypto and futures."""
+        section = self.fund_section
+        for w in section.winfo_children():
+            w.destroy()
+        results = [(group, [(spec, *judge_metric(spec, info)) for spec in metrics])
+                   for group, metrics in FUNDAMENTALS]
+        rated = [r for _, rows in results for _, r, _ in rows if r]
+        if info.get("quoteType") != "EQUITY" or len(rated) < 3:
+            section.pack_forget()
+            return
+        section.pack(fill="x", pady=(S(32), 0), before=self.headlines_title)
+
+        head = tk.Frame(section, bg=BG)
+        head.pack(fill="x")
+        title = tk.Frame(head, bg=BG)
+        title.pack(side="left", anchor="s")
+        label(title, "Fundamental Analysis", "h2").pack(anchor="w")
+        sector = " · ".join(x for x in (info.get("sector"), info.get("industry")) if x)
+        label(title, (sector + "  ·  " if sector else "") + "Judged against general rules of thumb",
+              "small", fg=MUTED).pack(anchor="w")
+        rating_legend(head).pack(side="right", anchor="s", pady=(0, S(2)))
+        tally = tk.Frame(head, bg=BG)
+        tally.pack(side="right", anchor="s", padx=(0, S(14)))
+        for rating in ("good", "fair", "weak"):
+            word = RATING_STYLE[rating][2].lower()
+            rating_pill(tally, rating, f"{rated.count(rating)} {word}", width=0).pack(side="left", padx=(S(6), 0))
+
+        grid = tk.Frame(section, bg=BG)
+        grid.pack(fill="x", pady=(S(14), 0))
+        for col, (group, rows) in enumerate(results):
+            grid.columnconfigure(col, weight=1, uniform="fund")
+            c = card(grid)
+            c.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else S(6), 0 if col == 3 else S(6)))
+            box = tk.Frame(c, bg=SURFACE)
+            box.pack(fill="both", expand=True, padx=S(16), pady=S(14))
+            label(box, group.upper(), "eyebrow", fg=ACCENT).pack(anchor="w", pady=(0, S(6)))
+            for spec, rating, text in rows:
+                row = tk.Frame(box, bg=SURFACE)
+                row.pack(fill="x", pady=S(3))
+                label(row, spec["name"], "small", fg=MUTED).pack(side="left")
+                rating_pill(row, rating, text, width=8).pack(side="right")
+                rules = "   ".join(f"{RATING_STYLE[r][2]}: {t}" for r, t in describe_cutoffs(spec))
+                Tooltip(row, f"{spec['name']}\n{spec['about']}\n\n{rules}")
+
+        foot = tk.Frame(section, bg=BG)
+        foot.pack(fill="x", pady=(S(10), 0))
+        link = label(foot, "How is each value judged? →", "body_semi", fg=ACCENT)
+        link.pack(side="left")
+        make_clickable(link, lambda: CriteriaDialog.open(self.app))
+        label(foot, "Hover any value for details. Educational only — not financial advice.",
+              "small", fg=FAINT).pack(side="right")
 
     def _fill_news(self, news):
         for w in self.news_box.winfo_children():
