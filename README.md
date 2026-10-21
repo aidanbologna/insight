@@ -1,13 +1,22 @@
-# Insight by Milton — v1 (Original)
+# Insight by Milton — v2 (Milton Redesign)
 
-The first prototype of Insight by Milton: a single Tkinter window that charts a stock's 2026 closing
-prices and the U.S. Treasury yield curve.
+A desktop markets companion for **The Milton Review**, redesigned to match the look of
+[themiltonreview.net](https://www.themiltonreview.net): cream background, serif headlines and the
+terracotta accent.
 
 ## Features
 
-- Stock price chart (default AAPL) with a search box, using `yfinance`
-- "Bond Market" button that draws the Treasury yield curve and prints recession signals to the console
-- Live date/time clock, logo header and navigation buttons (Home, News and Watchlist were placeholders)
+- **Home** — "Today's Brief" with market open/closed status and an auto-written market summary,
+  a Market Snapshot of 8 key markets with sparklines, Featured Insights from The Milton Review blog
+  (RSS), Today's Movers (gainers / losers / most active), newsletter panel and rotating investor quotes.
+- **Markets** — search by ticker or company name, interactive chart (1D–MAX) with hover readout,
+  50/200-day moving averages and volume, key statistics, company profile, ticker headlines,
+  add to watchlist, save chart as PNG/PDF.
+- **News** — market headlines by topic or search, beside the latest Milton Review articles.
+- **Watchlist** — saved list with live prices, change, day range, volume and 1-month sparkline;
+  refreshes every minute.
+- **Bond Market** — live U.S. Treasury yield curve vs 1 month / 1 year ago, yields table,
+  2s10s and 3M–10Y spread signals with Normal/Inverted badges, and a two-year spread history.
 
 ## Run it
 
@@ -16,12 +25,23 @@ pip install -r requirements.txt
 python insightByMilton.py
 ```
 
-## Known limitations
+## Build the Windows app (.exe)
 
-- Asset paths and the Treasury CSV path are hard-coded to `C:/Users/Owner/OneDrive/Desktop/...`,
-  so the script only runs on the original computer without editing those paths.
-- The Treasury download line is commented out; it reads a CSV saved on the Desktop.
-- Network calls run on the UI thread, so the window freezes while loading.
+Double-click `build.bat`, or run:
+
+```bash
+python -m PyInstaller --noconfirm --windowed --name insightByMilton --icon icon.ico --add-data "assets;assets" --add-data "icon.ico;." insightByMilton.py
+```
+
+The app is created in `dist/insightByMilton/insightByMilton.exe`.
+
+## Data sources
+
+- Yahoo Finance (`yfinance`) — prices, charts, statistics, movers and headlines
+- U.S. Department of the Treasury — daily par yield curve CSV (cached for offline use)
+- The Milton Review RSS feed — https://www.themiltonreview.net/blog-feed.xml
+
+The watchlist and Treasury cache are stored in `%APPDATA%/InsightByMilton`.
 
 ## Disclaimer
 
