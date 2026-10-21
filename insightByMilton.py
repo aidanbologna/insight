@@ -7,6 +7,7 @@
 # =============================================================================
 
 import html
+import importlib
 import io
 import json
 import os
@@ -18,7 +19,7 @@ import threading
 import webbrowser
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib import request
 
@@ -27,8 +28,6 @@ import tkinter.font as tkfont
 from tkinter import ttk, filedialog
 
 import numpy as np
-import pandas as pd
-import yfinance as yf
 from PIL import Image, ImageOps, ImageTk
 
 import matplotlib
@@ -203,6 +202,193 @@ FUNDAMENTALS = [
     ]),
 ]
 
+# News outlets. Bias ratings are AllSides Media Bias Ratings, checked on allsides.com in October 2026.
+BIAS_SCALE = ["Left", "Lean Left", "Center", "Lean Right", "Right"]
+BIAS_COLORS = {"Left": "#2F5C9E", "Lean Left": "#6E98CF", "Center": "#8E79AE",
+               "Lean Right": "#D98A84", "Right": "#B23A35"}
+BIAS_MEANING = {
+    "Left": "Coverage shows a strong, consistent left-of-center perspective in which stories are "
+            "chosen and how they are framed.",
+    "Lean Left": "Coverage shows a mild left-of-center tilt — mostly straight news, with story choice "
+                 "and wording that lean slightly left.",
+    "Center": "Coverage doesn't show much predictable political bias, or its leanings balance out "
+              "across stories.",
+    "Lean Right": "Coverage shows a mild right-of-center tilt — mostly straight news, with story choice "
+                  "and wording that lean slightly right.",
+    "Right": "Coverage shows a strong, consistent right-of-center perspective in which stories are "
+             "chosen and how they are framed.",
+}
+ALLSIDES = "https://www.allsides.com/news-source/"
+
+
+def bias_text_color(rating):
+    """The scale colours are soft; darken them a little when used for text."""
+    return blend(BIAS_COLORS[rating], INK, 0.25)
+
+NEWS_SOURCES = [
+    {"id": "cnbc", "name": "CNBC", "short": "CNBC", "color": "#005594", "bias": "Lean Left",
+     "site": "https://www.cnbc.com", "allsides": ALLSIDES + "cnbc",
+     "feeds": ["https://www.cnbc.com/id/100003114/device/rss/rss.html",
+               "https://www.cnbc.com/id/15839069/device/rss/rss.html"],
+     "facts": {"Founded": "1989", "Headquarters": "Englewood Cliffs, New Jersey", "Focus": "Business TV & markets"},
+     "about": "CNBC is a business news network best known for live coverage of the trading day, with "
+              "shows such as Squawk Box and Mad Money. Its website covers markets, investing, the "
+              "economy and corporate news around the clock."},
+    {"id": "wsj", "name": "The Wall Street Journal", "short": "WSJ", "color": "#222222", "bias": "Center",
+     "site": "https://www.wsj.com", "allsides": ALLSIDES + "wall-street-journal-media-bias",
+     "feeds": ["https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"],
+     "facts": {"Founded": "1889", "Owner": "Dow Jones & Company (News Corp)", "Headquarters": "New York City",
+               "Focus": "Business, markets & politics"},
+     "about": "The Wall Street Journal is one of the largest U.S. newspapers and a leading source of business "
+              "and financial reporting. AllSides rates its news section; its opinion pages are rated "
+              "separately. Many articles require a subscription."},
+    {"id": "marketwatch", "name": "MarketWatch", "short": "MW", "color": "#4C8C2B", "bias": "Center",
+     "site": "https://www.marketwatch.com", "allsides": ALLSIDES + "marketwatch-media-bias",
+     "feeds": ["https://feeds.content.dowjones.io/public/rss/mw_topstories"],
+     "facts": {"Founded": "1997", "Owner": "Dow Jones & Company (News Corp)", "Headquarters": "New York City",
+               "Focus": "Markets & personal finance"},
+     "about": "MarketWatch publishes market news, stock data and personal-finance advice. It began as a "
+              "joint venture between Data Broadcasting Corp. and CBS and has been part of Dow Jones, "
+              "publisher of The Wall Street Journal, since 2005."},
+    {"id": "bloomberg", "name": "Bloomberg", "short": "BBG", "color": "#3A2AD1", "bias": "Center",
+     "site": "https://www.bloomberg.com", "allsides": ALLSIDES + "bloomberg",
+     "feeds": ["https://feeds.bloomberg.com/markets/news.rss"],
+     "facts": {"Founded": "1990 (news service)", "Owner": "Bloomberg L.P.", "Headquarters": "New York City",
+               "Focus": "Global markets & finance"},
+     "about": "Bloomberg News is the newsroom of Bloomberg L.P., the financial data company behind the "
+              "Bloomberg Terminal used across Wall Street. It reports on markets, companies and economies "
+              "worldwide. Many articles require a subscription."},
+    {"id": "ft", "name": "Financial Times", "short": "FT", "color": "#990F3D", "bias": "Center",
+     "site": "https://www.ft.com", "allsides": ALLSIDES + "financial-times-media-bias",
+     "feeds": ["https://www.ft.com/markets?format=rss"],
+     "facts": {"Founded": "1888", "Owner": "Nikkei Inc.", "Headquarters": "London",
+               "Focus": "International business & economics"},
+     "about": "The Financial Times is a London-based daily known for its salmon-pink print edition and "
+              "in-depth coverage of global business, markets and economic policy. It has been owned by "
+              "Japan's Nikkei since 2015. Most articles require a subscription."},
+    {"id": "economist", "name": "The Economist", "short": "ECON", "color": "#E3120B", "bias": "Lean Left",
+     "site": "https://www.economist.com", "allsides": ALLSIDES + "economist",
+     "feeds": ["https://www.economist.com/finance-and-economics/rss.xml"],
+     "facts": {"Founded": "1843", "Owner": "The Economist Group", "Headquarters": "London",
+               "Focus": "Economics, politics & world affairs"},
+     "about": "The Economist is a weekly magazine covering economics, politics, business and science from "
+              "a global perspective. Its articles are famously unsigned, written in a single house voice. "
+              "Most articles require a subscription."},
+    {"id": "bbc", "name": "BBC News", "short": "BBC", "color": "#B80000", "bias": "Center",
+     "site": "https://www.bbc.com/business", "allsides": ALLSIDES + "bbc-news-media-bias",
+     "feeds": ["https://feeds.bbci.co.uk/news/business/rss.xml"],
+     "facts": {"Founded": "1922", "Owner": "British Broadcasting Corporation (public)",
+               "Headquarters": "London", "Focus": "World & UK news"},
+     "about": "BBC News is the news division of the United Kingdom's public broadcaster, funded mainly by "
+              "the UK licence fee. Its business desk covers global markets, companies and the economy, "
+              "with a strong international and British focus."},
+    {"id": "nyt", "name": "The New York Times", "short": "NYT", "color": "#121212", "bias": "Lean Left",
+     "site": "https://www.nytimes.com/section/business", "allsides": ALLSIDES + "new-york-times",
+     "feeds": ["https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"],
+     "facts": {"Founded": "1851", "Owner": "The New York Times Company", "Headquarters": "New York City",
+               "Focus": "National & world news"},
+     "about": "The New York Times is one of the most widely read U.S. newspapers. Its business section "
+              "covers the economy, Wall Street, technology and media, alongside its DealBook newsletter. "
+              "Many articles require a subscription."},
+    {"id": "guardian", "name": "The Guardian", "short": "GDN", "color": "#052962", "bias": "Left",
+     "site": "https://www.theguardian.com/business", "allsides": ALLSIDES + "guardian",
+     "feeds": ["https://www.theguardian.com/business/rss"],
+     "facts": {"Founded": "1821", "Owner": "Scott Trust Limited", "Headquarters": "London",
+               "Focus": "World news & commentary"},
+     "about": "The Guardian is a British daily founded in Manchester. It is owned by the Scott Trust, "
+              "which exists to protect its editorial independence, and it keeps its website free to read, "
+              "funded largely by reader contributions."},
+    {"id": "npr", "name": "NPR", "short": "NPR", "color": "#2F62B8", "bias": "Lean Left",
+     "site": "https://www.npr.org/sections/economy", "allsides": ALLSIDES + "npr-editorial",
+     "feeds": ["https://feeds.npr.org/1017/rss.xml"],
+     "facts": {"Founded": "1970", "Owner": "Nonprofit membership organization",
+               "Headquarters": "Washington, D.C.", "Focus": "Public radio news"},
+     "about": "NPR (National Public Radio) is a nonprofit media organization that produces news programs "
+              "such as Morning Edition and All Things Considered for a network of public radio stations. "
+              "Its economy coverage is free to read."},
+    {"id": "forbes", "name": "Forbes", "short": "FRBS", "color": "#3C3C3C", "bias": "Center",
+     "site": "https://www.forbes.com", "allsides": ALLSIDES + "forbes",
+     "feeds": ["https://www.forbes.com/business/feed/"],
+     "facts": {"Founded": "1917", "Headquarters": "Jersey City, New Jersey",
+               "Focus": "Business, wealth & entrepreneurship"},
+     "about": "Forbes is a business magazine famous for its billionaires and richest-people lists. Its "
+              "website mixes staff reporting with a large network of outside contributors, so quality and "
+              "viewpoint can vary from article to article."},
+    {"id": "thehill", "name": "The Hill", "short": "HILL", "color": "#1F3B5A", "bias": "Center",
+     "site": "https://thehill.com/business", "allsides": ALLSIDES + "hill",
+     "feeds": ["https://thehill.com/business/feed/"],
+     "facts": {"Founded": "1994", "Owner": "Nexstar Media Group", "Headquarters": "Washington, D.C.",
+               "Focus": "Congress, policy & politics"},
+     "about": "The Hill is a Washington publication focused on Congress, the White House and policy. Its "
+              "business coverage leans toward how government decisions — taxes, regulation, trade — "
+              "affect the economy and markets."},
+    {"id": "foxbusiness", "name": "Fox Business", "short": "FOXB", "color": "#003F7D", "bias": "Lean Right",
+     "site": "https://www.foxbusiness.com", "allsides": ALLSIDES + "fox-business-media-bias",
+     "feeds": ["https://moxie.foxbusiness.com/google-publisher/economy.xml",
+               "https://moxie.foxbusiness.com/google-publisher/markets.xml"],
+     "facts": {"Founded": "2007", "Owner": "Fox Corporation", "Headquarters": "New York City",
+               "Focus": "Business TV, markets & economy"},
+     "about": "Fox Business Network is a business news channel and website from Fox Corporation, the "
+              "parent of Fox News. It covers markets, the economy, personal finance and economic policy."},
+    {"id": "nypost", "name": "New York Post", "short": "POST", "color": "#C8102E", "bias": "Right",
+     "site": "https://nypost.com/business", "allsides": ALLSIDES + "new-york-post",
+     "feeds": ["https://nypost.com/business/feed/"],
+     "facts": {"Founded": "1801", "Owner": "News Corp", "Headquarters": "New York City",
+               "Focus": "Tabloid news & business"},
+     "about": "The New York Post is one of America's oldest newspapers, founded by Alexander Hamilton. "
+              "Today it is a tabloid known for punchy headlines; its business section covers Wall Street, "
+              "retail, media and real estate."},
+    {"id": "examiner", "name": "Washington Examiner", "short": "WE", "color": "#9E1B22", "bias": "Lean Right",
+     "site": "https://www.washingtonexaminer.com", "allsides": ALLSIDES + "washington-examiner",
+     "feeds": ["https://www.washingtonexaminer.com/tag/economy/feed/"],
+     "facts": {"Founded": "2005", "Owner": "Clarity Media Group", "Headquarters": "Washington, D.C.",
+               "Focus": "Politics & policy"},
+     "about": "The Washington Examiner is a Washington-based news and opinion outlet covering politics, "
+              "policy and the economy, publishing online and as a magazine."},
+    {"id": "wtimes", "name": "The Washington Times", "short": "WT", "color": "#1C3F6E", "bias": "Lean Right",
+     "site": "https://www.washingtontimes.com", "allsides": ALLSIDES + "washington-times",
+     "feeds": ["https://www.washingtontimes.com/rss/headlines/news/business-economy/"],
+     "facts": {"Founded": "1982", "Headquarters": "Washington, D.C.", "Focus": "National politics & policy"},
+     "about": "The Washington Times is a daily newspaper in the nation's capital founded in 1982 by "
+              "businesses tied to the Unification Church. It covers national politics, security and the "
+              "economy."},
+]
+SOURCES_BY_ID = {src["id"]: src for src in NEWS_SOURCES}
+
+NEWS_TOPICS = {
+    "All": [],
+    "Markets": ["stock", "stocks", "market", "markets", "s&p", "dow", "nasdaq", "wall street", "shares",
+                "investor", "investors", "rally", "sell-off", "selloff", "bond", "treasury", "yields"],
+    "Economy": ["economy", "economic", "inflation", "jobs", "gdp", "recession", "unemployment", "tariff",
+                "tariffs", "consumer", "wages", "housing", "prices"],
+    "The Fed": ["fed", "federal reserve", "powell", "interest rate", "interest rates", "rate cut",
+                "rate cuts", "rate hike", "central bank"],
+    "Earnings": ["earnings", "revenue", "profit", "profits", "quarter", "quarterly", "guidance", "results"],
+    "Tech": ["ai", "tech", "technology", "apple", "microsoft", "nvidia", "google", "alphabet", "amazon",
+             "meta", "chip", "chips", "semiconductor", "software", "openai", "tesla"],
+    "Energy": ["oil", "gas", "energy", "opec", "crude", "solar", "electricity", "power grid"],
+    "Crypto": ["bitcoin", "crypto", "cryptocurrency", "ethereum", "blockchain", "stablecoin", "coinbase"],
+}
+TOPIC_PATTERNS = {name: re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")\b", re.I)
+                  for name, words in NEWS_TOPICS.items() if words}
+
+# Markets overview
+INDEXES = [("S&P 500", "^GSPC"), ("Dow Jones", "^DJI"), ("Nasdaq", "^IXIC"), ("Russell 2000", "^RUT")]
+INDEX_COLORS = [INK, ACCENT, "#5B7FA6", "#7E9B6A"]
+SECTORS = [("Technology", "XLK"), ("Financials", "XLF"), ("Health Care", "XLV"),
+           ("Consumer Discretionary", "XLY"), ("Communication Services", "XLC"), ("Industrials", "XLI"),
+           ("Consumer Staples", "XLP"), ("Energy", "XLE"), ("Utilities", "XLU"),
+           ("Real Estate", "XLRE"), ("Materials", "XLB")]
+BIG_STOCKS = [("AAPL", "Apple"), ("MSFT", "Microsoft"), ("NVDA", "Nvidia"), ("GOOGL", "Alphabet"),
+              ("AMZN", "Amazon"), ("META", "Meta Platforms"), ("AVGO", "Broadcom"), ("TSLA", "Tesla"),
+              ("BRK-B", "Berkshire Hathaway"), ("JPM", "JPMorgan Chase"), ("LLY", "Eli Lilly"),
+              ("V", "Visa"), ("WMT", "Walmart"), ("XOM", "Exxon Mobil"), ("MA", "Mastercard"),
+              ("NFLX", "Netflix"), ("COST", "Costco"), ("UNH", "UnitedHealth")]
+OVERVIEW_RANGES = {"1D": ("1d", "5m"), "5D": ("5d", "30m"), "1M": ("1mo", "1d"), "6M": ("6mo", "1d"),
+                   "YTD": ("ytd", "1d"), "1Y": ("1y", "1d"), "5Y": ("5y", "1wk")}
+TICK_FORMATS = {"1D": "%I:%M %p", "5D": "%a %d", "1M": "%b %d", "6M": "%b %d", "YTD": "%b %d",
+                "1Y": "%b '%y", "5Y": "%Y", "MAX": "%Y"}
+
 # Treasury par yield curve maturities: (short label, CSV column)
 MATURITIES = [("1M", "1 Mo"), ("3M", "3 Mo"), ("6M", "6 Mo"), ("1Y", "1 Yr"), ("2Y", "2 Yr"),
               ("3Y", "3 Yr"), ("5Y", "5 Yr"), ("7Y", "7 Yr"), ("10Y", "10 Yr"), ("20Y", "20 Yr"),
@@ -210,6 +396,32 @@ MATURITIES = [("1M", "1 Mo"), ("3M", "3 Mo"), ("6M", "6 Mo"), ("1Y", "1 Yr"), ("
 TREASURY_URL = ("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
                 "daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve"
                 "&field_tdr_date_value={year}&page&_format=csv")
+
+
+class LazyModule:
+    """Imports a heavy library the first time it's used so the window can open ~2 s sooner.
+    The first use always happens on a background thread, keeping the UI responsive."""
+    _lock = threading.Lock()
+
+    def __init__(self, name):
+        self._name, self._module = name, None
+
+    def __getattr__(self, attr):
+        if self._module is None:
+            with LazyModule._lock:
+                if self._module is None:
+                    self._module = importlib.import_module(self._name)
+        return getattr(self._module, attr)
+
+
+def _bundle_hint():
+    # never called — these plain imports just tell PyInstaller to include the libraries
+    import pandas  # noqa: F401
+    import yfinance  # noqa: F401
+
+
+pd = LazyModule("pandas")
+yf = LazyModule("yfinance")
 
 
 # -----------------------------------------------------------------------------
@@ -382,11 +594,16 @@ def fetch_image(url):
     return Image.open(io.BytesIO(http_get(url))).convert("RGB")
 
 
-def fetch_images(urls):
-    """Download many thumbnails in parallel. Failed downloads come back as None."""
+def fetch_images(urls, max_size=(720, 720)):
+    """Download thumbnails in parallel and shrink them here, off the UI thread.
+    Failed downloads come back as None."""
     def one(url):
         try:
-            return fetch_image(url) if url else None
+            if not url:
+                return None
+            img = fetch_image(url)
+            img.thumbnail(max_size, Image.LANCZOS)
+            return img
         except Exception:
             return None
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -416,22 +633,121 @@ def fetch_milton_articles(limit=12):
     return articles[:limit]
 
 
-def fetch_headlines(query, count=12):
-    """Market headlines from Yahoo Finance search."""
-    items = yf.Search(query, max_results=1, news_count=count).news or []
-    out = []
-    for n in items:
-        sizes = (n.get("thumbnail") or {}).get("resolutions") or []
-        small = [r for r in sizes if r.get("tag") == "140x140"] or sizes
-        ts = n.get("providerPublishTime")
-        out.append({
-            "title": n.get("title", ""),
-            "publisher": n.get("publisher", ""),
-            "link": n.get("link"),
-            "date": datetime.fromtimestamp(ts) if ts else None,
-            "image": small[0].get("url") if small else None,
+MEDIA = "{http://search.yahoo.com/mrss/}"
+ATOM = "{http://www.w3.org/2005/Atom}"
+IMG_RE = re.compile(r"<img[^>]+src=[\"']([^\"']+)", re.I)
+
+
+def _clean(text):
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _parse_date(text):
+    if not text:
+        return None
+    try:
+        dt = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        try:
+            dt = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _item_image(item):
+    for tag in (MEDIA + "content", MEDIA + "thumbnail"):
+        for el in item.iter(tag):
+            url = el.get("url")
+            if url and (el.get("medium") in (None, "image") or "image" in (el.get("type") or "")):
+                return url
+    enclosure = item.find("enclosure")
+    if enclosure is not None and "image" in (enclosure.get("type") or "image"):
+        return enclosure.get("url")
+    raw = (item.findtext("description") or "") + (item.findtext("{http://purl.org/rss/1.0/modules/content/}encoded") or "")
+    match = IMG_RE.search(raw)
+    return html.unescape(match.group(1)) if match else None
+
+
+def parse_feed(data, source_id, limit=30):
+    root = ET.fromstring(data)
+    items = root.findall(".//item") or root.findall(f".//{ATOM}entry")
+    articles = []
+    for rank, item in enumerate(items[:limit]):
+        link = item.findtext("link") or ""
+        if not link.strip():
+            atom_link = item.find(ATOM + "link")
+            link = atom_link.get("href") if atom_link is not None else ""
+        title = _clean(item.findtext("title") or item.findtext(ATOM + "title"))
+        if not title or not link.strip():
+            continue
+        summary = _clean(item.findtext("description") or item.findtext(ATOM + "summary"))
+        articles.append({
+            "source": source_id, "rank": rank, "title": title, "link": link.strip(),
+            "summary": summary if summary.lower() != title.lower() else "",
+            "date": _parse_date(item.findtext("pubDate") or item.findtext(ATOM + "updated")
+                                or item.findtext(ATOM + "published")
+                                or item.findtext("{http://purl.org/dc/elements/1.1/}date")),
+            "image": _item_image(item),
         })
-    return out
+    return articles
+
+
+def fetch_source(source):
+    """All articles from one outlet's feeds, de-duplicated, in the outlet's own order."""
+    articles, seen = [], set()
+    for url in source["feeds"]:
+        try:
+            for art in parse_feed(http_get(url, timeout=10), source["id"]):
+                if art["link"] not in seen and art["title"] not in seen:
+                    seen.update((art["link"], art["title"]))
+                    articles.append(art)
+        except Exception as exc:
+            print(f"Feed failed ({source['name']}): {exc}")
+    return articles
+
+
+def fetch_all_news():
+    """Every outlet's feed, downloaded in parallel. Returns {source id: [articles]}."""
+    with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as pool:
+        results = pool.map(fetch_source, NEWS_SOURCES)
+    news = {src["id"]: arts for src, arts in zip(NEWS_SOURCES, results)}
+    if not any(news.values()):
+        raise ConnectionError("Couldn't reach any news source.")
+    return news
+
+
+def newest_first(news):
+    """Flatten {source: [articles]} into one list, newest first, without duplicate headlines."""
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=45)   # some feeds keep years-old evergreen posts
+    seen, merged = set(), []
+    for art in sorted((a for arts in news.values() for a in arts),
+                      key=lambda a: a["date"] or oldest, reverse=True):
+        key = art["title"].lower()
+        if art["date"] and art["date"] < cutoff:
+            continue
+        if key not in seen:
+            seen.add(key)
+            merged.append(art)
+    return merged
+
+
+def company_pattern(symbol, name):
+    """Regex that finds a company in headlines by its short name or ticker."""
+    aliases = {"GOOGL": "Google|Alphabet", "GOOG": "Google|Alphabet", "META": "Meta|Facebook",
+               "BRK-B": "Berkshire", "BRK-A": "Berkshire"}
+    cleaned = re.sub(r"[,.]|\b(Inc|Incorporated|Corporation|Corp|Company|Co|Ltd|Limited|plc|PLC|Holdings|"
+                     r"Group|N\.?V|S\.?A|AG|SE|Class [A-C]|The)\b", " ", name or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    names = [re.escape(cleaned)] if len(cleaned) >= 3 else []
+    if symbol in aliases:
+        names.append(aliases[symbol])
+    parts = [r"\b(" + "|".join(names) + r")\b"] if names else []
+    words = re.compile("|".join(parts), re.I) if parts else None
+    ticker = re.compile(r"\b" + re.escape(symbol) + r"\b") if len(symbol) >= 3 else None
+    return lambda text: bool((words and words.search(text)) or (ticker and ticker.search(text)))
 
 
 def fetch_quotes(symbols):
@@ -461,6 +777,16 @@ def fetch_quotes(symbols):
             "spark": [float(v) for v in close.tail(22)],
         }
     return quotes
+
+
+def fetch_index_history(range_key):
+    """Closing levels of the four major indices over a range, aligned on one time axis."""
+    period, interval = OVERVIEW_RANGES[range_key]
+    with YF_LOCK:
+        df = yf.download([s for _, s in INDEXES], period=period, interval=interval,
+                         auto_adjust=True, progress=False, threads=True)
+    close = df["Close"] if isinstance(df.columns, pd.MultiIndex) else df[["Close"]]
+    return close.dropna(how="all").ffill().bfill()
 
 
 def fetch_movers(kind, count=8):
@@ -528,12 +854,7 @@ def load_symbol(query, range_key):
         hist = fetch_history(symbol, range_key)
     if hist.empty:
         raise LookupError(f"No price data found for “{query}”.")
-    info = fetch_info(symbol)
-    try:
-        news = fetch_headlines(symbol, count=5)
-    except Exception:
-        news = []
-    return {"symbol": symbol, "hist": hist, "info": info, "news": news}
+    return {"symbol": symbol, "hist": hist, "info": fetch_info(symbol)}
 
 
 def fetch_treasury():
@@ -597,6 +918,37 @@ class Worker:
             except Exception as exc:
                 print(f"Callback failed: {exc}")
         self.root.after(50, self._poll)
+
+
+class SharedFetch:
+    """Downloads something once for several pages and serves it from memory until it goes stale."""
+
+    def __init__(self, worker, fn, max_age):
+        self.worker, self.fn, self.max_age = worker, fn, max_age
+        self.value, self.fetched, self.loading, self.waiters = None, None, False, []
+
+    def get(self, on_done, on_error=None, force=False):
+        fresh = self.value is not None and (datetime.now() - self.fetched).total_seconds() < self.max_age
+        if fresh and not force:
+            on_done(self.value)
+            return
+        self.waiters.append((on_done, on_error))
+        if not self.loading:
+            self.loading = True
+            self.worker.run(self.fn, self._done, self._failed)
+
+    def _done(self, value):
+        self.value, self.fetched, self.loading = value, datetime.now(), False
+        waiters, self.waiters = self.waiters, []
+        for callback, _ in waiters:
+            callback(value)
+
+    def _failed(self, error):
+        self.loading = False
+        waiters, self.waiters = self.waiters, []
+        for _, callback in waiters:
+            if callback:
+                callback(error)
 
 
 class WatchlistStore:
@@ -706,6 +1058,18 @@ def init_ttk(root):
                     bordercolor=BG, lightcolor=BORDER, darkcolor=BORDER, gripcount=0,
                     arrowsize=S(9), relief="flat")
     style.map("Milton.Vertical.TScrollbar", background=[("active", FAINT)])
+
+
+def set_index_ticks(ax, index, range_key):
+    """~7 date labels for a chart plotted against bar number instead of date."""
+    fmt = TICK_FORMATS[range_key]
+    ticks = sorted(set(np.linspace(0, len(index) - 1, 7).round().astype(int)))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([index[i].strftime(fmt).lstrip("0") for i in ticks])
+    tick_labels = ax.get_xticklabels()
+    if len(tick_labels) > 1:
+        tick_labels[0].set_horizontalalignment("left")
+        tick_labels[-1].set_horizontalalignment("right")
 
 
 def style_axes(ax, price_on_right=False):
@@ -1104,6 +1468,87 @@ def rating_legend(parent):
     return box
 
 
+def blend(color, other, amount):
+    """Mix two hex colours; amount=0 gives color, 1 gives other."""
+    a = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(other[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
+
+
+def source_badge(parent, src, font="eyebrow", padx=5, pady=1, width=5):
+    badge = label(parent, src["short"], font, fg="#FFFFFF", bg=src["color"], padx=S(padx), pady=S(pady),
+                  width=width)
+    badge.keep_bg = True
+    return badge
+
+
+class BiasScale(tk.Canvas):
+    """Five-step Left → Right scale with the outlet's AllSides rating highlighted."""
+
+    def __init__(self, parent, rating, width=400, compact=False):
+        self.rating, self.compact = rating, compact
+        height = S(12) if compact else S(70)
+        super().__init__(parent, width=S(width), height=height, bg=parent.cget("bg"),
+                         highlightthickness=0, bd=0)
+        self.keep_bg = not compact
+        self.bind("<Configure>", lambda e: self._draw())
+
+    def _draw(self):
+        self.delete("all")
+        w = self.winfo_width()
+        if w < 20:
+            return
+        gap = S(2) if self.compact else S(4)
+        seg = (w - gap * 4) / 5
+        top, bottom = (S(2), S(10)) if self.compact else (S(20), S(36))
+        for i, step in enumerate(BIAS_SCALE):
+            x = i * (seg + gap)
+            on = step == self.rating
+            color = BIAS_COLORS[step] if on else blend(BIAS_COLORS[step], self.cget("bg"), 0.68)
+            round_rect(self, x, top, x + seg, bottom, S(3), fill=color, outline=color)
+            if not self.compact:
+                self.create_text(x + seg / 2, S(52), text=step, fill=INK if on else FAINT,
+                                 font=FONTS["small_semi" if on else "small"])
+                if on:
+                    cx = x + seg / 2
+                    self.create_polygon(cx - S(7), S(4), cx + S(7), S(4), cx, S(15), fill=INK, outline=INK)
+
+
+class HeadlineRow(tk.Frame):
+    """Text-only headline: source badge, outlet, bias, time, title and summary.
+    Clicking the headline opens the article on the publisher's site; clicking the outlet opens
+    its source page inside the app."""
+
+    def __init__(self, parent, app, article, bg=BG, summary=True, show_source=True):
+        super().__init__(parent, bg=bg)
+        src = SOURCES_BY_ID[article["source"]]
+        inner = tk.Frame(self, bg=bg)
+        inner.pack(fill="x", padx=S(8), pady=S(11))
+        meta = tk.Frame(inner, bg=bg)
+        meta.pack(fill="x")
+        source_links = []
+        if show_source:
+            badge = source_badge(meta, src)
+            badge.pack(side="left", padx=(0, S(8)))
+            name = label(meta, src["name"], "small_semi")
+            name.pack(side="left")
+            label(meta, f"  {src['bias']}", "small", fg=bias_text_color(src["bias"])).pack(side="left")
+            label(meta, "  ·  ", "small", fg=FAINT).pack(side="left")
+            source_links = [badge, name]
+        label(meta, time_ago(article["date"]) if article["date"] else "", "small", fg=FAINT).pack(side="left")
+        wrap_label(inner, article["title"], "card_title").pack(fill="x", pady=(S(4), 0))
+        if summary and article["summary"]:
+            text = article["summary"]
+            text = text[:180].rsplit(" ", 1)[0] + "…" if len(text) > 180 else text
+            wrap_label(inner, text, "small", fg=MUTED).pack(fill="x", pady=(S(3), 0))
+        divider(self)
+        make_clickable(self, lambda: open_link(article["link"]))
+        for w in source_links:
+            w.unbind("<Button-1>")
+            w.bind("<Button-1>", lambda e: app.show_source(src["id"]))
+        add_hover(self, lambda: set_bg(self, SAND), lambda: set_bg(self, bg))
+
+
 class CriteriaDialog(tk.Toplevel):
     """Popup explaining what every fundamental metric means and how it's colour-coded."""
     instance = None
@@ -1258,7 +1703,7 @@ class HomePage(Page):
               "lead", justify="left", wraplength=S(470)).pack(anchor="w", pady=(S(14), S(24)))
         buttons = tk.Frame(left, bg=BG)
         buttons.pack(anchor="w")
-        RoundButton(buttons, "Explore Markets", lambda: self.app.show("Markets")).pack(side="left")
+        RoundButton(buttons, "Explore Markets", lambda: self.app.navigate("Markets")).pack(side="left")
         RoundButton(buttons, "Read The Milton Review", lambda: open_link(SITE_URL),
                     kind="ghost").pack(side="left", padx=S(12))
 
@@ -1280,7 +1725,7 @@ class HomePage(Page):
         self.brief_label.pack(fill="x")
         more = label(inner, "Open the full market view →", "body_semi", fg=ACCENT)
         more.pack(anchor="w", pady=(S(16), 0))
-        make_clickable(more, lambda: self.app.show("Markets"))
+        make_clickable(more, lambda: self.app.navigate("Markets"))
         self.update_status()
 
     def update_status(self):
@@ -1505,7 +1950,7 @@ class HomePage(Page):
     def first_load(self):
         self._load_snapshot()
         self._load_movers()
-        self.app.get_articles(self._show_insights, self._insights_failed)
+        self.app.milton.get(self._show_insights, self._insights_failed)
 
     def refresh(self):
         self._load_snapshot()
@@ -1513,9 +1958,13 @@ class HomePage(Page):
 
 # -------------------------------------------------------------- Markets ------
 class MarketsPage(Page):
+    refresh_ms = 60_000
 
     def build(self):
-        self.symbol, self.range_key = "AAPL", "1Y"
+        self.range_key, self.overview_range = "1Y", "1M"
+        self.mode = "overview"
+        self.overview_id = 0
+        self.hover_bg = None
         self.overlays = {"50-day MA", "Volume"}
         self.data = None
         self.prev_close = self.last_price = None
@@ -1528,8 +1977,8 @@ class MarketsPage(Page):
         wrap.pack(fill="both", expand=True, padx=S(56), pady=(0, S(40)))
 
         # search row
-        head = self.page_header(wrap, "Markets", "Search any stock, ETF, index, future or crypto — "
-                                                 "by ticker or company name.")
+        head = self.page_header(wrap, "Markets", "Today's market at a glance. Search any stock, ETF, index "
+                                                 "or crypto by ticker or company name.")
         search = tk.Frame(head, bg=BG)
         search.pack(side="right", anchor="s")
         self.search = SearchEntry(search, "Search e.g. AAPL or Tesla", self.do_search, width=28)
@@ -1543,14 +1992,21 @@ class MarketsPage(Page):
             RoundButton(popular, sym, lambda s=sym: self.load(s), kind="chip", font="chip",
                         padx=12, pady=5, radius=12).pack(side="left", padx=(0, S(6)))
 
-        cols = tk.Frame(wrap, bg=BG)
-        cols.pack(fill="both", expand=True)
+        self.overview = tk.Frame(wrap, bg=BG)
+        self.overview.pack(fill="both", expand=True)
+        self._build_overview(self.overview)
+
+        cols = tk.Frame(wrap, bg=BG)   # the single-stock detail view, shown by load()
+        self.detail = cols
         cols.columnconfigure(0, weight=1)
         cols.columnconfigure(1, minsize=S(330))
         main = tk.Frame(cols, bg=BG)
         main.grid(row=0, column=0, sticky="nsew", padx=(0, S(28)))
         side = tk.Frame(cols, bg=BG)
         side.grid(row=0, column=1, sticky="nsew")
+        back = label(main, "← Market overview", "body_semi", fg=ACCENT)
+        back.pack(anchor="w", pady=(0, S(14)))
+        make_clickable(back, self.show_overview)
 
         # quote header
         title = tk.Frame(main, bg=BG)
@@ -1585,6 +2041,7 @@ class MarketsPage(Page):
         chart.configure(height=S(440), bg=BG, highlightthickness=0)
         chart.pack(fill="x", pady=(S(4), 0))
         self.canvas.mpl_connect("motion_notify_event", self._on_hover)
+        self.canvas.mpl_connect("draw_event", self._save_background)
         self.canvas.mpl_connect("figure_leave_event", lambda e: self._hide_hover())
 
         self.fund_section = tk.Frame(main, bg=BG)   # only packed for companies, see _fill_fundamentals
@@ -1610,8 +2067,202 @@ class MarketsPage(Page):
 
         self.app.watchlist.listeners.append(self._update_watch_button)
 
+    # --- market overview (default view) ------------------------------------------
+    def _build_overview(self, parent):
+        # index cards
+        cards = tk.Frame(parent, bg=BG)
+        cards.pack(fill="x")
+        self.index_cards = {}
+        for i, (name, sym) in enumerate(INDEXES):
+            cards.columnconfigure(i, weight=1, uniform="idx")
+            c = card(cards)
+            c.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else S(8), 0 if i == 3 else S(8)))
+            box = tk.Frame(c, bg=SURFACE)
+            box.pack(fill="both", expand=True, padx=S(18), pady=S(14))
+            top = tk.Frame(box, bg=SURFACE)
+            top.pack(fill="x")
+            dot = tk.Canvas(top, width=S(10), height=S(10), bg=SURFACE, highlightthickness=0)
+            dot.create_oval(1, 1, S(9), S(9), fill=INDEX_COLORS[i], outline="")
+            dot.pack(side="left", padx=(0, S(6)))
+            label(top, name.upper(), "eyebrow", fg=MUTED).pack(side="left")
+            value = label(box, "—", "card_value")
+            value.pack(anchor="w", pady=(S(4), 0))
+            change = label(box, " ", "small_semi", fg=MUTED)
+            change.pack(anchor="w")
+            make_clickable(c, lambda s=sym: self.load(s))
+            hover_border(c)
+            self.index_cards[sym] = (value, change)
+
+        # comparison chart
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=(S(26), S(4)))
+        label(row, "Major Indices", "h2").pack(side="left")
+        ChipGroup(row, list(OVERVIEW_RANGES), self._set_overview_range,
+                  value=self.overview_range).pack(side="right")
+        self.overview_note = label(parent, "Percent change over the period — compare how each index has moved.",
+                                   "small", fg=MUTED)
+        self.overview_note.pack(anchor="w")
+        self.index_fig = Figure(figsize=(9, 3.4), dpi=96 * SCALE, facecolor=BG)
+        self.index_canvas = FigureCanvasTkAgg(self.index_fig, master=parent)
+        w = self.index_canvas.get_tk_widget()
+        w.configure(height=S(340), bg=BG, highlightthickness=0)
+        w.pack(fill="x", pady=(S(6), 0))
+
+        # sectors + largest companies
+        lower = tk.Frame(parent, bg=BG)
+        lower.pack(fill="x", pady=(S(28), 0))
+        lower.columnconfigure(0, weight=2, uniform="lower")
+        lower.columnconfigure(1, weight=3, uniform="lower")
+
+        sec = card(lower)
+        sec.grid(row=0, column=0, sticky="nsew", padx=(0, S(10)))
+        sbox = tk.Frame(sec, bg=SURFACE)
+        sbox.pack(fill="both", expand=True, padx=S(22), pady=S(18))
+        label(sbox, "Sector Performance", "h2").pack(anchor="w")
+        label(sbox, "S&P 500 sectors, today · click to open the sector ETF", "small", fg=MUTED).pack(anchor="w")
+        self.sector_rows = {}
+        rows = tk.Frame(sbox, bg=SURFACE)
+        rows.pack(fill="x", pady=(S(10), 0))
+        rows.columnconfigure(1, weight=1)
+        for r, (name, sym) in enumerate(SECTORS):
+            name_lbl = label(rows, name, "small", anchor="w")
+            name_lbl.grid(row=r, column=0, sticky="w", pady=S(4), padx=(0, S(10)))
+            bar = tk.Canvas(rows, height=S(14), bg=SURFACE, highlightthickness=0)
+            bar.grid(row=r, column=1, sticky="ew")
+            pct = label(rows, "", "small_semi", width=7, anchor="e")
+            pct.grid(row=r, column=2, sticky="e", padx=(S(8), 0))
+            for widget in (name_lbl, bar, pct):
+                widget.bind("<Button-1>", lambda e, s=sym: self.load(s))
+                widget.configure(cursor="hand2")
+            bar.bind("<Configure>", lambda e, s=sym: self._draw_sector_bar(s))
+            self.sector_rows[sym] = (bar, pct)
+        self.sector_values = {}
+
+        big = card(lower)
+        big.grid(row=0, column=1, sticky="nsew", padx=(S(10), 0))
+        bbox = tk.Frame(big, bg=SURFACE)
+        bbox.pack(fill="both", expand=True, padx=S(22), pady=S(18))
+        label(bbox, "Largest Companies", "h2").pack(anchor="w")
+        label(bbox, "Click any company for its full chart, statistics and fundamentals", "small",
+              fg=MUTED).pack(anchor="w", pady=(0, S(8)))
+        self.big_rows = {}
+        for sym, name in BIG_STOCKS:
+            divider(bbox)
+            r = tk.Frame(bbox, bg=SURFACE)
+            r.pack(fill="x")
+            r.columnconfigure(1, weight=1)
+            label(r, sym, "body_semi", width=7, anchor="w").grid(row=0, column=0, sticky="w", pady=S(6), padx=(S(4), 0))
+            label(r, name, "body", fg=MUTED, anchor="w").grid(row=0, column=1, sticky="w")
+            price = label(r, "…", "body", width=9, anchor="e")
+            price.grid(row=0, column=2, sticky="e")
+            pill_box = tk.Frame(r, bg=SURFACE)
+            pill_box.grid(row=0, column=3, sticky="e", padx=S(12))
+            spark = Sparkline(r, height=24, width=110)
+            spark.grid(row=0, column=4, sticky="e", padx=(0, S(4)))
+            make_clickable(r, lambda s=sym: self.load(s))
+            add_hover(r, lambda r=r: set_bg(r, SAND), lambda r=r: set_bg(r, SURFACE))
+            self.big_rows[sym] = (price, pill_box, spark)
+
+    def _draw_sector_bar(self, sym):
+        bar, _ = self.sector_rows[sym]
+        bar.delete("all")
+        pct = self.sector_values.get(sym)
+        w, h = bar.winfo_width(), bar.winfo_height()
+        if pct is None or w < 10:
+            return
+        scale = max((abs(v) for v in self.sector_values.values()), default=1) or 1
+        mid = w / 2
+        bar.create_line(mid, 0, mid, h, fill=BORDER)
+        length = (w / 2 - S(2)) * abs(pct) / scale
+        x0, x1 = (mid, mid + length) if pct >= 0 else (mid - length, mid)
+        bar.create_rectangle(x0, S(2), x1, h - S(2), fill=UP if pct >= 0 else DOWN, outline="")
+
+    def _load_overview(self):
+        symbols = [s for _, s in INDEXES] + [s for _, s in SECTORS] + [s for s, _ in BIG_STOCKS]
+        self.app.worker.run(lambda: fetch_quotes(symbols), self._show_overview_quotes,
+                            lambda e: self.overview_note.configure(
+                                text="Couldn't reach Yahoo Finance — retrying in a minute.", fg=DOWN))
+        self._load_index_chart()
+
+    def _show_overview_quotes(self, quotes):
+        for sym, (value, change) in self.index_cards.items():
+            q = quotes.get(sym)
+            if q:
+                value.configure(text=fmt_price(q["last"]))
+                change.configure(text=f"{fmt_change(q['change'])}  ({fmt_pct(q['pct'])})",
+                                 fg=trend_color(q["change"]))
+        self.sector_values = {s: quotes[s]["pct"] for _, s in SECTORS if s in quotes}
+        for sym, (bar, pct) in self.sector_rows.items():
+            v = self.sector_values.get(sym)
+            pct.configure(text=fmt_pct(v) if v is not None else "—", fg=trend_color(v))
+            self._draw_sector_bar(sym)
+        for sym, (price, pill_box, spark) in self.big_rows.items():
+            q = quotes.get(sym)
+            if not q:
+                continue
+            price.configure(text=fmt_price(q["last"]))
+            for w in pill_box.winfo_children():
+                w.destroy()
+            change_pill(pill_box, q["pct"], width=8).pack()
+            spark.set(q["spark"], trend_color(q["change"]))
+
+    def _set_overview_range(self, range_key):
+        self.overview_range = range_key
+        self._load_index_chart()
+
+    def _load_index_chart(self):
+        self.overview_id += 1
+        rid, rk = self.overview_id, self.overview_range
+        self.app.worker.run(lambda: fetch_index_history(rk),
+                            lambda df: self._draw_index_chart(rid, rk, df))
+
+    def _draw_index_chart(self, rid, range_key, df):
+        if rid != self.overview_id or df.empty:
+            return
+        fig = self.index_fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        style_axes(ax, price_on_right=True)
+        x = np.arange(len(df))
+        for i, (name, sym) in enumerate(INDEXES):
+            if sym not in df:
+                continue
+            series = df[sym].to_numpy()
+            change = (series / series[0] - 1) * 100
+            ax.plot(x, change, color=INDEX_COLORS[i], linewidth=1.8 if i == 0 else 1.4,
+                    label=f"{name}  {change[-1]:+.2f}%")
+        ax.axhline(0, color=FAINT, linewidth=0.8, linestyle=(0, (2, 3)))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:+.0f}%" if abs(v) >= 5 else f"{v:+.1f}%"))
+        ax.set_xlim(0, max(len(x) - 1, 1))
+        set_index_ticks(ax, df.index, range_key)
+        ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), frameon=False, fontsize=8, ncol=4,
+                  labelcolor=MUTED, borderaxespad=0.2)
+        fig.subplots_adjust(left=0.02, right=0.93, top=0.88, bottom=0.1)
+        self.index_canvas.draw_idle()
+
+    def show_overview(self):
+        self.request_id += 1   # ignore any stock that was still loading
+        self._set_mode("overview")
+        self.app.set_status("")
+
+    def _set_mode(self, mode):
+        if mode == self.mode:
+            return
+        self.mode = mode
+        if mode == "overview":
+            self.detail.pack_forget()
+            self.overview.pack(fill="both", expand=True)
+        else:
+            self.overview.pack_forget()
+            self.detail.pack(fill="both", expand=True)
+        self.scroller.to_top()
+
     def first_load(self):
-        self.load(self.symbol)
+        self._load_overview()
+
+    def refresh(self):
+        if self.mode == "overview":
+            self._load_overview()
 
     def show(self):
         super().show()
@@ -1625,7 +2276,10 @@ class MarketsPage(Page):
             self.load(query)
 
     def load(self, query):
-        self.loaded = True
+        if not self.loaded:
+            self.loaded = True
+            self._load_overview()
+        self._set_mode("detail")
         self.request_id += 1
         rid, rk = self.request_id, self.range_key
         self.scroller.to_top()
@@ -1707,7 +2361,7 @@ class MarketsPage(Page):
         self.about_title.configure(text=f"About {info.get('shortName') or sym}" if about else "")
         self.about_label.configure(text=(about[:520].rsplit(" ", 1)[0] + "…") if len(about) > 520 else about)
         self._fill_fundamentals(info)
-        self._fill_news(data["news"])
+        self._fill_news(sym, info)
         self._update_watch_button()
         self._draw_chart()
         self.app.set_status(f"Showing {sym}")
@@ -1817,18 +2471,30 @@ class MarketsPage(Page):
         label(foot, "Hover any value for details. Educational only — not financial advice.",
               "small", fg=FAINT).pack(side="right")
 
-    def _fill_news(self, news):
+    def _fill_news(self, symbol, info):
+        """Headlines that mention this company, taken from the followed news outlets."""
         for w in self.news_box.winfo_children():
             w.destroy()
-        if not news:
-            label(self.news_box, "No recent headlines.", "body", fg=FAINT).pack(anchor="w")
-            return
-        rows = [NewsRow(self.news_box, n["title"], f"{n['publisher']} · {time_ago(n['date'])}",
-                        link=n["link"], thumb=(96, 64)) for n in news]
-        for r in rows:
-            r.pack(fill="x")
-        self.app.worker.run(lambda: fetch_images([n["image"] for n in news]),
-                            lambda imgs: [r.set_image(im) for r, im in zip(rows, imgs) if im])
+        name = info.get("shortName") or info.get("longName") or ""
+        if info.get("quoteType") not in ("EQUITY", "ETF"):
+            name = name if info.get("quoteType") != "CRYPTOCURRENCY" else name.split(" ")[0]
+        matches = company_pattern(symbol, name)
+        label(self.news_box, "Looking through today's headlines…", "body", fg=FAINT).pack(anchor="w")
+
+        def show(news):
+            if not self.data or self.data["symbol"] != symbol:
+                return
+            for w in self.news_box.winfo_children():
+                w.destroy()
+            found = [a for a in newest_first(news) if matches(a["title"] + " " + a["summary"])][:6]
+            if not found:
+                label(self.news_box, f"None of the {len(NEWS_SOURCES)} followed outlets mention "
+                                     f"{name or symbol} in their latest headlines.", "body",
+                      fg=FAINT).pack(anchor="w")
+            for art in found:
+                HeadlineRow(self.news_box, self.app, art).pack(fill="x")
+
+        self.app.news.get(show, lambda e: None)
 
     # --- chart ------------------------------------------------------------------
     def _chart_message(self, text):
@@ -1886,17 +2552,7 @@ class MarketsPage(Page):
                       frameon=False, fontsize=8, ncol=3, labelcolor=MUTED)
 
         # date labels
-        fmt = {"1D": "%I:%M %p", "5D": "%a %d", "1M": "%b %d", "6M": "%b %d", "YTD": "%b %d",
-               "1Y": "%b '%y", "5Y": "%Y", "MAX": "%Y"}[self.range_key]
-        ticks = sorted(set(np.linspace(0, len(x) - 1, 7).round().astype(int)))
-        labels = [hist.index[i].strftime(fmt).lstrip("0") for i in ticks]
-        bottom = axv or ax
-        bottom.set_xticks(ticks)
-        bottom.set_xticklabels(labels)
-        tick_labels = bottom.get_xticklabels()
-        if len(tick_labels) > 1:
-            tick_labels[0].set_horizontalalignment("left")
-            tick_labels[-1].set_horizontalalignment("right")
+        set_index_ticks(axv or ax, hist.index, self.range_key)
         if axv is not None:
             style_axes(axv, price_on_right=True)
             ax.tick_params(labelbottom=False)
@@ -1909,13 +2565,32 @@ class MarketsPage(Page):
         self.period_label.configure(text=f"{fmt_pct(period_change)} {word}", fg=trend_color(period_change))
 
         # hover crosshair + readout
-        vline = ax.axvline(0, color=MUTED, linewidth=0.8, linestyle=":", visible=False)
-        dot, = ax.plot([], [], "o", color=color, markersize=5, markeredgecolor=BG, markeredgewidth=1.5)
+        vline = ax.axvline(0, color=MUTED, linewidth=0.8, linestyle=":", visible=False, animated=True)
+        dot, = ax.plot([], [], "o", color=color, markersize=5, markeredgecolor=BG, markeredgewidth=1.5,
+                       animated=True)
         tip = ax.text(0.99, 0.98, "", transform=ax.transAxes, ha="right", va="top", fontsize=8.5,
-                      color=INK, bbox=dict(boxstyle="round,pad=0.5", fc=SURFACE, ec=BORDER), visible=False)
+                      color=INK, bbox=dict(boxstyle="round,pad=0.5", fc=SURFACE, ec=BORDER), visible=False,
+                      animated=True)
+        self.hover_bg = None
         self.hover_artists = (ax, axv, vline, dot, tip, close, base, intraday)
         self.fig.subplots_adjust(left=0.02, right=0.92, top=0.97, bottom=0.08)
         self.canvas.draw_idle()
+
+    def _save_background(self, _event):
+        """After each full redraw, remember the chart image so hovering only redraws the crosshair."""
+        if self.hover_artists:
+            self.hover_bg = self.canvas.copy_from_bbox(self.fig.bbox)
+
+    def _blit_hover(self, visible):
+        if not self.hover_artists or self.hover_bg is None:
+            return
+        ax, axv, vline, dot, tip = self.hover_artists[:5]
+        self.canvas.restore_region(self.hover_bg)
+        for artist in (vline, dot, tip):
+            artist.set_visible(visible)
+            if visible:
+                ax.draw_artist(artist)
+        self.canvas.blit(self.fig.bbox)
 
     def _on_hover(self, event):
         if not self.hover_artists or not self.data:
@@ -1925,6 +2600,9 @@ class MarketsPage(Page):
             self._hide_hover()
             return
         i = int(min(max(round(event.xdata), 0), len(close) - 1))
+        if getattr(self, "_hover_index", None) == i and vline.get_visible():
+            return
+        self._hover_index = i
         when = self.data["hist"].index[i]
         stamp = when.strftime("%a %b %d, %I:%M %p" if intraday else "%a %b %d, %Y").replace(" 0", " ")
         vol = self.data["hist"]["Volume"].iloc[i]
@@ -1932,65 +2610,37 @@ class MarketsPage(Page):
                      + (f"\nVol {fmt_big(vol)}" if vol else ""))
         vline.set_xdata([i, i])
         dot.set_data([i], [close[i]])
-        for a in (vline, dot, tip):
-            a.set_visible(True)
-        self.canvas.draw_idle()
+        self._blit_hover(True)
 
     def _hide_hover(self):
-        if self.hover_artists:
-            for a in self.hover_artists[2:5]:
-                a.set_visible(False)
-            self.canvas.draw_idle()
+        if self.hover_artists and self.hover_artists[2].get_visible():
+            self._hover_index = None
+            self._blit_hover(False)
 
 
-class NewsRow(tk.Frame):
-    """Thumbnail + headline row used on the News and Markets pages."""
-
-    def __init__(self, parent, title, meta, link=None, excerpt=None, thumb=(120, 80), bg=BG):
-        super().__init__(parent, bg=bg)
-        self.base_bg = bg
-        inner = tk.Frame(self, bg=bg)
-        inner.pack(fill="x", padx=S(8), pady=S(12))
-        self.thumb = Thumbnail(inner, thumb[1], width=thumb[0], placeholder=meta)
-        self.thumb.pack(side="left", anchor="n", padx=(0, S(16)))
-        text = tk.Frame(inner, bg=bg)
-        text.pack(side="left", fill="x", expand=True, anchor="n")
-        label(text, meta, "small", fg=FAINT, anchor="w").pack(fill="x")
-        wrap_label(text, title, "card_title").pack(fill="x", pady=(S(2), 0))
-        if excerpt:
-            wrap_label(text, excerpt, "small", fg=MUTED).pack(fill="x", pady=(S(4), 0))
-        divider(self)
-        if link:
-            make_clickable(self, lambda: open_link(link))
-            add_hover(self, lambda: set_bg(self, SAND), lambda: set_bg(self, self.base_bg))
-
-    def set_image(self, image):
-        self.thumb.set_image(image)
-
-
-# ----------------------------------------------------------------- News ------
 class NewsPage(Page):
-    refresh_ms = 5 * 60_000
-    TOPICS = {"Top Stories": "stock market", "Economy": "economy", "The Fed": "federal reserve",
-              "Earnings": "earnings", "Tech": "tech stocks", "Energy": "oil prices", "Crypto": "bitcoin"}
+    refresh_ms = 10 * 60_000
+    PAGE_SIZE = 30
 
     def build(self):
-        self.query = "stock market"
-        self.request_id = 0
+        self.topic, self.query, self.limit = "All", "", self.PAGE_SIZE
+        self.articles = []
+        self._filter_job = None
         self.scroller = ScrollFrame(self)
         self.scroller.pack(fill="both", expand=True)
         wrap = tk.Frame(self.scroller.inner, bg=BG)
         wrap.pack(fill="both", expand=True, padx=S(56), pady=(0, S(40)))
 
-        head = self.page_header(wrap, "News", "Market headlines from around the web, plus the "
-                                              "latest analysis from The Milton Review.")
+        head = self.page_header(wrap, "News", f"Headlines from {len(NEWS_SOURCES)} outlets across the political "
+                                              "spectrum. Click a headline to read it on the publisher's site, "
+                                              "or an outlet to learn about it.")
         search = tk.Frame(head, bg=BG)
         search.pack(side="right", anchor="s")
-        self.search = SearchEntry(search, "Search news e.g. inflation", self.do_search, width=26)
+        self.search = SearchEntry(search, "Filter headlines e.g. inflation", self._apply_search, width=28)
         self.search.pack(side="left")
-        RoundButton(search, "Search", self.do_search).pack(side="left", padx=(S(10), 0))
+        self.search.entry.bind("<KeyRelease>", lambda e: self._schedule_filter(), add="+")
 
-        self.topics = ChipGroup(wrap, list(self.TOPICS), self.set_topic, value="Top Stories")
+        self.topics = ChipGroup(wrap, list(NEWS_TOPICS), self.set_topic, value="All")
         self.topics.pack(anchor="w", pady=(0, S(20)))
 
         cols = tk.Frame(wrap, bg=BG)
@@ -2000,97 +2650,263 @@ class NewsPage(Page):
 
         left = tk.Frame(cols, bg=BG)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, S(24)))
-        self.headline_title = label(left, "Market Headlines", "h2")
-        self.headline_title.pack(anchor="w")
-        divider(left, pady=(S(10), 0))
-        self.headlines = tk.Frame(left, bg=BG)
-        self.headlines.pack(fill="x")
-
-        right = card(cols, bg=SAND, border=False)
-        right.grid(row=0, column=1, sticky="nsew", padx=(S(8), 0))
-        rbox = tk.Frame(right, bg=SAND)
-        rbox.pack(fill="both", expand=True, padx=S(24), pady=S(22))
-        top = tk.Frame(rbox, bg=SAND)
+        top = tk.Frame(left, bg=BG)
         top.pack(fill="x")
-        label(top, "From The Milton Review", "h2").pack(side="left")
-        more = label(top, "Visit blog →", "small_semi", fg=ACCENT)
+        self.list_title = label(top, "Latest Headlines", "h2")
+        self.list_title.pack(side="left")
+        self.count_label = label(top, "", "small", fg=FAINT)
+        self.count_label.pack(side="right", anchor="s")
+        divider(left, pady=(S(10), 0))
+        self.list = tk.Frame(left, bg=BG)
+        self.list.pack(fill="x")
+        label(self.list, f"Loading headlines from {len(NEWS_SOURCES)} outlets…", "body",
+              fg=FAINT).pack(anchor="w", pady=S(12))
+        self.more = RoundButton(left, "Show more headlines", self._show_more, kind="ghost")
+
+        right = tk.Frame(cols, bg=BG)
+        right.grid(row=0, column=1, sticky="nsew", padx=(S(8), 0))
+        sources = card(right)
+        sources.pack(fill="x")
+        sbox = tk.Frame(sources, bg=SURFACE)
+        sbox.pack(fill="both", expand=True, padx=S(22), pady=S(18))
+        label(sbox, "Browse by Source", "h2").pack(anchor="w")
+        label(sbox, "Ordered from left to right by AllSides Media Bias Rating", "small",
+              fg=MUTED).pack(anchor="w", pady=(0, S(8)))
+        self.source_counts = {}
+        for src in sorted(NEWS_SOURCES, key=lambda s: (BIAS_SCALE.index(s["bias"]), s["name"])):
+            divider(sbox)
+            row = tk.Frame(sbox, bg=SURFACE)
+            row.pack(fill="x")
+            source_badge(row, src).pack(side="left", pady=S(8), padx=(S(4), S(10)))
+            label(row, src["name"], "body").pack(side="left")
+            BiasScale(row, src["bias"], width=70, compact=True).pack(side="right", padx=(S(10), S(4)))
+            count = label(row, "", "small", fg=FAINT)
+            count.pack(side="right")
+            self.source_counts[src["id"]] = count
+            make_clickable(row, lambda i=src["id"]: self.app.show_source(i))
+            add_hover(row, lambda r=row: set_bg(r, SAND), lambda r=row: set_bg(r, SURFACE))
+        link = label(sbox, "About AllSides ratings →", "small_semi", fg=ACCENT)
+        link.pack(anchor="w", pady=(S(12), 0))
+        make_clickable(link, lambda: open_link("https://www.allsides.com/media-bias/media-bias-rating-methods"))
+
+        milton = tk.Frame(right, bg=SAND)
+        milton.pack(fill="x", pady=(S(20), 0))
+        mbox = tk.Frame(milton, bg=SAND)
+        mbox.pack(fill="both", expand=True, padx=S(22), pady=S(18))
+        mtop = tk.Frame(mbox, bg=SAND)
+        mtop.pack(fill="x")
+        label(mtop, "From The Milton Review", "h2").pack(side="left")
+        more = label(mtop, "Visit blog →", "small_semi", fg=ACCENT)
         more.pack(side="right")
         make_clickable(more, lambda: open_link(BLOG_URL))
-        divider(rbox, pady=(S(10), 0))
-        self.articles = tk.Frame(rbox, bg=SAND)
-        self.articles.pack(fill="x")
-        label(self.articles, "Loading…", "body", fg=FAINT).pack(anchor="w", pady=S(12))
+        self.milton_list = tk.Frame(mbox, bg=SAND)
+        self.milton_list.pack(fill="x", pady=(S(8), 0))
 
+    # --- data -----------------------------------------------------------------------
     def first_load(self):
-        self._load_headlines()
-        self.app.get_articles(self._show_articles, self._articles_failed)
+        self.app.news.get(self._got_news, self._news_failed)
+        self.app.milton.get(self._show_milton, lambda e: None)
 
     def refresh(self):
-        self._load_headlines()
+        self.app.news.get(self._got_news, self._news_failed, force=True)
 
-    def set_topic(self, topic):
-        self.query = self.TOPICS[topic]
-        self.headline_title.configure(text="Market Headlines" if topic == "Top Stories" else topic)
-        self._load_headlines()
+    def _got_news(self, news):
+        self.articles = newest_first(news)
+        for sid, count in self.source_counts.items():
+            n = len(news.get(sid, []))
+            count.configure(text=f"{n} stories" if n else "offline")
+        self._render()
 
-    def do_search(self):
-        query = self.search.get()
-        if query:
-            self.query = query
-            self.topics.set(None)
-            self.headline_title.configure(text=f"Results for “{query}”")
-            self._load_headlines()
-
-    def _load_headlines(self):
-        self.request_id += 1
-        rid, query = self.request_id, self.query
-        for w in self.headlines.winfo_children():
+    def _news_failed(self, error):
+        for w in self.list.winfo_children():
             w.destroy()
-        label(self.headlines, "Loading headlines…", "body", fg=FAINT).pack(anchor="w", pady=S(12))
-        self.app.worker.run(lambda: fetch_headlines(query, count=14),
-                            lambda items: self._show_headlines(rid, items),
-                            lambda e: self._headlines_failed(rid))
-
-    def _show_headlines(self, rid, items):
-        if rid != self.request_id:
-            return
-        for w in self.headlines.winfo_children():
-            w.destroy()
-        if not items:
-            label(self.headlines, "No headlines found.", "body", fg=FAINT).pack(anchor="w", pady=S(12))
-            return
-        rows = [NewsRow(self.headlines, n["title"], f"{n['publisher'].upper()}  ·  {time_ago(n['date'])}",
-                        link=n["link"]) for n in items]
-        for r in rows:
-            r.pack(fill="x")
-        self.app.worker.run(lambda: fetch_images([n["image"] for n in items]),
-                            lambda imgs: [r.set_image(im) for r, im in zip(rows, imgs) if im])
-
-    def _headlines_failed(self, rid):
-        if rid != self.request_id:
-            return
-        for w in self.headlines.winfo_children():
-            w.destroy()
-        label(self.headlines, "Couldn't load headlines. Check your connection.", "body",
+        label(self.list, "Couldn't load the news. Check your connection.", "body",
               fg=DOWN).pack(anchor="w", pady=S(12))
 
-    def _show_articles(self, articles):
-        for w in self.articles.winfo_children():
+    def _show_milton(self, articles):
+        for w in self.milton_list.winfo_children():
             w.destroy()
-        rows = []
-        for a in articles[:8]:
-            excerpt = a["summary"][:120].rsplit(" ", 1)[0] + "…" if len(a["summary"]) > 120 else a["summary"]
-            r = NewsRow(self.articles, a["title"], f"{a['author']}  ·  {short_date(a['date'])}",
-                        link=a["link"], excerpt=excerpt, thumb=(96, 72), bg=SAND)
-            r.pack(fill="x")
-            rows.append(r)
-        self.app.worker.run(lambda: fetch_images([a["image"] for a in articles[:8]]),
-                            lambda imgs: [r.set_image(im) for r, im in zip(rows, imgs) if im])
+        for art in articles[:6]:
+            row = tk.Frame(self.milton_list, bg=SAND)
+            row.pack(fill="x", pady=S(6))
+            label(row, f"{art['author']}  ·  {short_date(art['date'])}", "small", fg=FAINT).pack(anchor="w")
+            wrap_label(row, art["title"], "card_title").pack(fill="x")
+            make_clickable(row, lambda url=art["link"]: open_link(url))
 
-    def _articles_failed(self, error):
-        for w in self.articles.winfo_children():
+    # --- filtering (all local, so it's instant) -------------------------------------
+    def set_topic(self, topic):
+        self.topic, self.limit = topic or "All", self.PAGE_SIZE
+        self._render()
+
+    def _schedule_filter(self):
+        if self._filter_job:
+            self.after_cancel(self._filter_job)
+        self._filter_job = self.after(250, self._apply_search)
+
+    def _apply_search(self):
+        self._filter_job = None
+        query = self.search.get().lower()
+        if query != self.query:
+            self.query, self.limit = query, self.PAGE_SIZE
+            self._render()
+
+    def _show_more(self):
+        self.limit += self.PAGE_SIZE
+        self._render(keep_scroll=True)
+
+    def _filtered(self):
+        pattern = TOPIC_PATTERNS.get(self.topic)
+        words = self.query.split()
+        out = []
+        for art in self.articles:
+            text = f"{art['title']} {art['summary']}"
+            if pattern and not pattern.search(text):
+                continue
+            low = text.lower()
+            if words and not all(w in low for w in words):
+                continue
+            out.append(art)
+        return out
+
+    def _render(self, keep_scroll=False):
+        if not self.articles:
+            return
+        items = self._filtered()
+        for w in self.list.winfo_children():
             w.destroy()
-        label(self.articles, "Couldn't reach themiltonreview.net.", "body", fg=DOWN).pack(anchor="w", pady=S(12))
+        title = "Latest Headlines" if self.topic == "All" else self.topic
+        self.list_title.configure(text=f"Results for “{self.query}”" if self.query else title)
+        shown = items[:self.limit]
+        self.count_label.configure(text=f"Showing {len(shown)} of {len(items)}")
+        if not items:
+            label(self.list, "No headlines match right now.", "body", fg=FAINT).pack(anchor="w", pady=S(12))
+        for art in shown:
+            HeadlineRow(self.list, self.app, art).pack(fill="x")
+        if len(items) > self.limit:
+            self.more.pack(anchor="w", pady=(S(16), 0))
+        else:
+            self.more.pack_forget()
+        if not keep_scroll:
+            self.scroller.to_top()
+
+
+class SourcePage(Page):
+    """About one news outlet: summary, political alignment and its top stories."""
+    refresh_ms = None
+
+    def build(self):
+        self.source = None
+        self.request_id = 0
+        self.scroller = ScrollFrame(self)
+        self.scroller.pack(fill="both", expand=True)
+        wrap = tk.Frame(self.scroller.inner, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=S(56), pady=(S(28), S(40)))
+        back = label(wrap, "← All news", "body_semi", fg=ACCENT)
+        back.pack(anchor="w")
+        make_clickable(back, lambda: self.app.navigate("News"))
+        self.content = tk.Frame(wrap, bg=BG)
+        self.content.pack(fill="both", expand=True)
+
+    def open(self, source_id):
+        src = SOURCES_BY_ID[source_id]
+        self.source = src
+        self.request_id += 1
+        for w in self.content.winfo_children():
+            w.destroy()
+        self.scroller.to_top()
+
+        head = tk.Frame(self.content, bg=BG)
+        head.pack(fill="x", pady=(S(18), S(22)))
+        source_badge(head, src, font="h2", padx=14, pady=8, width=0).pack(side="left", anchor="n",
+                                                                         padx=(0, S(18)))
+        names = tk.Frame(head, bg=BG)
+        names.pack(side="left", anchor="w")
+        label(names, src["name"], "page_title").pack(anchor="w")
+        site = label(names, src["site"].replace("https://", "").replace("www.", "") + "  ↗", "body_semi",
+                     fg=ACCENT)
+        site.pack(anchor="w")
+        make_clickable(site, lambda: open_link(src["site"]))
+
+        cols = tk.Frame(self.content, bg=BG)
+        cols.pack(fill="x")
+        cols.columnconfigure(0, weight=3, uniform="src")
+        cols.columnconfigure(1, weight=2, uniform="src")
+
+        about = tk.Frame(cols, bg=BG)
+        about.grid(row=0, column=0, sticky="nsew", padx=(0, S(28)))
+        label(about, "ABOUT", "eyebrow", fg=ACCENT).pack(anchor="w")
+        wrap_label(about, src["about"], "lead").pack(fill="x", pady=(S(6), S(16)))
+        facts = tk.Frame(about, bg=BG)
+        facts.pack(fill="x")
+        for key, value in src["facts"].items():
+            divider(facts)
+            row = tk.Frame(facts, bg=BG)
+            row.pack(fill="x", pady=S(7))
+            label(row, key, "small", fg=MUTED, width=16, anchor="w").pack(side="left")
+            label(row, value, "small_semi").pack(side="left")
+        divider(facts)
+
+        bias = card(cols)
+        bias.grid(row=0, column=1, sticky="nsew")
+        bbox = tk.Frame(bias, bg=SURFACE)
+        bbox.pack(fill="both", expand=True, padx=S(24), pady=S(20))
+        label(bbox, "POLITICAL ALIGNMENT", "eyebrow", fg=ACCENT).pack(anchor="w")
+        label(bbox, src["bias"], "h2", fg=bias_text_color(src["bias"])).pack(anchor="w", pady=(S(4), S(8)))
+        BiasScale(bbox, src["bias"]).pack(fill="x")
+        wrap_label(bbox, BIAS_MEANING[src["bias"]], "small", fg=MUTED).pack(fill="x", pady=(S(8), S(10)))
+        wrap_label(bbox, "Rating: AllSides Media Bias Rating™, based on blind surveys of readers across the "
+                         "spectrum, editorial reviews and independent research. It describes the outlet's "
+                         "online news coverage, not individual articles.", "small",
+                   fg=FAINT).pack(fill="x")
+        link = label(bbox, f"See {src['short'] if len(src['name']) > 16 else src['name']} on AllSides →",
+                     "small_semi", fg=ACCENT)
+        link.pack(anchor="w", pady=(S(10), 0))
+        make_clickable(link, lambda: open_link(src["allsides"]))
+
+        section_header(self.content, "Top Stories", f"In the order {src['name']} features them")
+        self.stories = tk.Frame(self.content, bg=BG)
+        self.stories.pack(fill="x")
+        label(self.stories, "Loading…", "body", fg=FAINT).pack(anchor="w")
+        rid = self.request_id
+        self.app.news.get(lambda news: self._show_stories(rid, news.get(src["id"], [])),
+                          lambda e: self._show_stories(rid, []))
+
+    def _show_stories(self, rid, articles):
+        if rid != self.request_id:
+            return
+        for w in self.stories.winfo_children():
+            w.destroy()
+        if not articles:
+            label(self.stories, f"Couldn't load stories from {self.source['name']} right now.", "body",
+                  fg=DOWN).pack(anchor="w")
+            return
+        top = sorted(articles, key=lambda a: a["rank"])[:9]
+        thumbs = []
+        for i, art in enumerate(top):
+            row, col = divmod(i, 3)
+            self.stories.columnconfigure(col, weight=1, uniform="story")
+            c = card(self.stories)
+            c.grid(row=row, column=col, sticky="nsew", pady=S(8),
+                   padx=(0 if col == 0 else S(8), 0 if col == 2 else S(8)))
+            thumb = Thumbnail(c, 170, placeholder=self.source["short"])
+            if art["image"]:
+                thumb.pack(fill="x")
+                thumbs.append((thumb, art["image"]))
+            box = tk.Frame(c, bg=SURFACE)
+            box.pack(fill="both", expand=True, padx=S(18), pady=S(14))
+            label(box, time_ago(art["date"]) if art["date"] else "", "small", fg=FAINT).pack(anchor="w")
+            wrap_label(box, art["title"], "card_title").pack(fill="x", pady=(S(2), S(4)))
+            if art["summary"]:
+                text = art["summary"]
+                text = text[:150].rsplit(" ", 1)[0] + "…" if len(text) > 150 else text
+                wrap_label(box, text, "small", fg=MUTED).pack(fill="x")
+            label(box, "Read on " + self.source["name"] + " →", "small_semi", fg=ACCENT).pack(anchor="w", pady=(S(8), 0))
+            make_clickable(c, lambda url=art["link"]: open_link(url))
+            hover_border(c)
+        if thumbs:
+            self.app.worker.run(lambda: fetch_images([u for _, u in thumbs]),
+                                lambda imgs: rid == self.request_id and
+                                [t.set_image(im) for (t, _), im in zip(thumbs, imgs) if im])
 
 
 # ------------------------------------------------------------ Watchlist ------
@@ -2504,7 +3320,8 @@ class App(tk.Tk):
 
         self.worker = Worker(self)
         self.watchlist = WatchlistStore()
-        self._articles, self._article_waiters, self._articles_loading = None, [], False
+        self.news = SharedFetch(self.worker, fetch_all_news, max_age=10 * 60)
+        self.milton = SharedFetch(self.worker, fetch_milton_articles, max_age=30 * 60)
 
         self._build_header()
         self._build_footer()
@@ -2512,12 +3329,14 @@ class App(tk.Tk):
         self.body.pack(fill="both", expand=True)
 
         self.pages = {name: cls(self) for name, cls in self.PAGES}
+        self.pages["Source"] = SourcePage(self)
         self.current = None
         self.show("Home")
+        self.after(1500, lambda: self.news.get(lambda n: None, lambda e: None))  # warm the news cache
 
         self.bind_all("<MouseWheel>", self._on_wheel)
         for i, (name, _) in enumerate(self.PAGES, start=1):
-            self.bind_all(f"<Control-Key-{i}>", lambda e, n=name: self.show(n))
+            self.bind_all(f"<Control-Key-{i}>", lambda e, n=name: self.navigate(n))
         self.bind_all("<Control-f>", lambda e: self._focus_search())
         self._tick()
 
@@ -2560,7 +3379,7 @@ class App(tk.Tk):
         except Exception:
             brand = label(bar, APP_NAME, "h2", cursor="hand2")
         brand.grid(row=0, column=0, sticky="w")
-        brand.bind("<Button-1>", lambda e: self.show("Home"))
+        brand.bind("<Button-1>", lambda e: self.navigate("Home"))
 
         nav = tk.Frame(bar, bg=BG)
         nav.grid(row=0, column=1)
@@ -2568,9 +3387,9 @@ class App(tk.Tk):
         for name, _ in self.PAGES:
             link = label(nav, name, "nav", cursor="hand2")
             link.pack(side="left", padx=S(18))
-            link.bind("<Button-1>", lambda e, n=name: self.show(n))
+            link.bind("<Button-1>", lambda e, n=name: self.navigate(n))
             link.bind("<Enter>", lambda e, l=link: l.configure(fg=ACCENT))
-            link.bind("<Leave>", lambda e, n=name, l=link: l.configure(fg=ACCENT if n == self.current else INK))
+            link.bind("<Leave>", lambda e, n=name, l=link: l.configure(fg=ACCENT if n == self._active_nav() else INK))
             self.nav_links[name] = link
 
         right = tk.Frame(bar, bg=BG)
@@ -2610,9 +3429,23 @@ class App(tk.Tk):
         page = self.pages[name]
         page.pack(fill="both", expand=True)
         page.show()
+        active = self._active_nav()
         for n, link in self.nav_links.items():
-            link.configure(fg=ACCENT if n == name else INK,
-                           font=FONTS["nav_active"] if n == name else FONTS["nav"])
+            link.configure(fg=ACCENT if n == active else INK,
+                           font=FONTS["nav_active"] if n == active else FONTS["nav"])
+
+    def _active_nav(self):
+        return "News" if self.current == "Source" else self.current
+
+    def navigate(self, name):
+        """Header links: Markets always opens on the general market overview."""
+        self.show(name)
+        if name == "Markets":
+            self.pages["Markets"].show_overview()
+
+    def show_source(self, source_id):
+        self.show("Source")
+        self.pages["Source"].open(source_id)
 
     def open_symbol(self, symbol):
         self.show("Markets")
@@ -2626,32 +3459,6 @@ class App(tk.Tk):
 
     def set_status(self, text):
         self.status_label.configure(text=text)
-
-    # --- shared data ----------------------------------------------------------------
-    def get_articles(self, on_done, on_error=None):
-        """Milton Review posts are shared by the Home and News pages; fetch them once."""
-        if self._articles is not None:
-            on_done(self._articles)
-            return
-        self._article_waiters.append((on_done, on_error))
-        if self._articles_loading:
-            return
-        self._articles_loading = True
-
-        def done(articles):
-            self._articles, self._articles_loading = articles, False
-            waiters, self._article_waiters = self._article_waiters, []
-            for cb, _ in waiters:
-                cb(articles)
-
-        def failed(error):
-            self._articles_loading = False
-            waiters, self._article_waiters = self._article_waiters, []
-            for _, cb in waiters:
-                if cb:
-                    cb(error)
-
-        self.worker.run(fetch_milton_articles, done, failed)
 
     # --- events -----------------------------------------------------------------------
     def _on_wheel(self, event):

@@ -1,34 +1,44 @@
-# Insight by Milton — v3 (Fundamentals)
+# Insight by Milton — v4 (News Sources & Speed)
 
 A desktop markets companion for **The Milton Review**, styled after
-[themiltonreview.net](https://www.themiltonreview.net). Version 3 adds colour-coded
-**fundamental analysis** for individual stocks.
+[themiltonreview.net](https://www.themiltonreview.net).
+
+## What's new in v4
+
+- **Faster** — the window opens ~1.5 s sooner (heavy libraries load in the background), chart hovering
+  is ~4× faster (only the crosshair is redrawn), thumbnails are shrunk off the UI thread, and news
+  filtering happens instantly in memory.
+- **News from 16 outlets** — headlines come straight from each publisher's RSS feed and open directly
+  on the publisher's website. Filter by topic or keyword instantly.
+- **Source pages** — click any outlet for a summary, key facts, a Left → Right political alignment
+  scale (AllSides Media Bias Rating) and its top stories with images.
+- **Markets overview** — the Markets tab now opens on the whole market: major index cards and a
+  comparison chart, S&P 500 sector performance and the largest companies. Click anything for its full
+  detail view; "← Market overview" or the Markets tab returns to the overview.
+- Stock headlines on the detail view now come from the 16 outlets instead of Yahoo Finance.
 
 ## Features
 
-- **Home** — "Today's Brief" with market open/closed status and an auto-written market summary,
-  a Market Snapshot of 8 key markets with sparklines, Featured Insights from The Milton Review blog
-  (RSS), Today's Movers (gainers / losers / most active), newsletter panel and rotating investor quotes.
-- **Markets** — search by ticker or company name, interactive chart (1D–MAX) with hover readout,
-  50/200-day moving averages and volume, key statistics, company profile, ticker headlines,
-  add to watchlist, save chart as PNG/PDF.
-- **News** — market headlines by topic or search, beside the latest Milton Review articles.
-- **Watchlist** — saved list with live prices, change, day range, volume and 1-month sparkline;
-  refreshes every minute.
-- **Bond Market** — live U.S. Treasury yield curve vs 1 month / 1 year ago, yields table,
-  2s10s and 3M–10Y spread signals with Normal/Inverted badges, and a two-year spread history.
-- **Fundamental Analysis (new in v3)** — on the Markets page for individual stocks: 18 metrics in four
-  cards (Valuation, Profitability, Growth, Health & Dividends), each colour-coded green / yellow / red
-  against fixed rules of thumb, with a good/fair/weak tally, hover tooltips, and a
-  "How is each value judged?" popup that explains every metric and its cutoffs.
+- **Home** — Today's Brief, Market Snapshot, Featured Insights from The Milton Review, Today's Movers,
+  newsletter panel and rotating quotes.
+- **Markets** — market overview, plus per-stock charts (1D–MAX, moving averages, volume, hover readout),
+  key statistics, colour-coded fundamental analysis with a criteria popup, company profile and headlines.
+- **News** — 16 outlets, topic chips, instant filtering, source pages with bias scale.
+- **Watchlist** — saved symbols with live prices and sparklines.
+- **Bond Market** — Treasury yield curve, spreads and recession signals.
 
-## How fundamentals are judged
+## News sources and political alignment
 
-Each value is compared with a fixed, widely used rule of thumb:
-**green = good, yellow = fair, red = weak.** Losses and negative values show red; values Yahoo
-Finance doesn't report show a gray "—" and aren't counted. The full list of cutoffs is in the
-app's "How is each value judged?" popup and in the `FUNDAMENTALS` table near the top of
-`insightByMilton.py`, so the thresholds are easy to adjust.
+Ratings are AllSides Media Bias Ratings, checked on allsides.com in October 2026. They describe each
+outlet's online news coverage and can change over time.
+
+| Outlet | AllSides rating |
+|---|---|
+| The Guardian | Left |
+| CNBC, The Economist, The New York Times, NPR | Lean Left |
+| The Wall Street Journal (news), MarketWatch, Bloomberg, Financial Times, BBC News, Forbes, The Hill | Center |
+| Fox Business, Washington Examiner, The Washington Times | Lean Right |
+| New York Post | Right |
 
 ## Run it
 
@@ -45,19 +55,10 @@ Double-click `build.bat`, or run:
 python -m PyInstaller --noconfirm --windowed --name insightByMilton --icon icon.ico --add-data "assets;assets" --add-data "icon.ico;." insightByMilton.py
 ```
 
-The app is created in `dist/insightByMilton/insightByMilton.exe`.
-
-## Data sources
-
-- Yahoo Finance (`yfinance`) — prices, charts, statistics, fundamentals, movers and headlines
-- U.S. Department of the Treasury — daily par yield curve CSV (cached for offline use)
-- The Milton Review RSS feed — https://www.themiltonreview.net/blog-feed.xml
-
-The watchlist and Treasury cache are stored in `%APPDATA%/InsightByMilton`.
-
 ## Disclaimer
 
-Educational commentary only — nothing in this app is financial advice. Market data comes from
-Yahoo Finance via the unofficial `yfinance` library and may be delayed.
+Educational commentary only — nothing in this app is financial advice. Market data comes from Yahoo
+Finance via the unofficial `yfinance` library and may be delayed. Headlines and images belong to their
+publishers; the app links to the original articles.
 
 © 2026 The Milton Review · aidanbologna@themiltonreview.net · https://www.themiltonreview.net
