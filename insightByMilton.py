@@ -11,6 +11,7 @@ import html
 import importlib
 import io
 import json
+import logging
 import math
 import os
 import queue
@@ -244,12 +245,14 @@ def set_dark_titlebar(window, dark):
         pass
 
 
-VERSION = "11.0"
+VERSION = "12.0"
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
 BLOG_URL = SITE_URL + "/blog"
 RSS_URL = SITE_URL + "/blog-feed.xml"
 CONTACT_EMAIL = "aidanbologna@themiltonreview.net"
+RELEASES_URL = "https://github.com/aidanbologna/insight/releases"
+SETUP_URL = RELEASES_URL + "/latest/download/InsightByMilton-Setup.exe"    # always the newest installer
 
 QUOTES = [
     ("Investing without research is like playing stud poker and never looking at the cards.", "Peter Lynch"),
@@ -1238,15 +1241,99 @@ def fetch_stock_news(symbol, info, pool_news, limit=10):
     return {"articles": found[:limit], "names": names}
 
 
+# --- Going easy on Yahoo Finance -------------------------------------------------------------
+# Yahoo slows down or blocks a network that asks too often, and a classroom on one Wi-Fi connection
+# looks like a single very busy computer. So prices refresh at a chosen pace, pages share what was
+# already downloaded, and the app holds back for a few minutes when Yahoo answers "Too Many Requests".
+REFRESH_PACES = {"live": 1, "balanced": 5, "light": 15}     # minutes between automatic price refreshes
+DEFAULT_PACE = "balanced"
+CLOSED_MARKET_MINUTES = 15      # prices barely move while the stock market is closed
+QUOTE_TTL = 55                  # seconds a downloaded price is shared between pages
+_BACKOFF = {"until": 0.0, "strikes": 0, "last": 0.0}
+
+
+def rate_limited():
+    """Seconds left before the app asks Yahoo Finance again by itself (0 when it isn't holding back)."""
+    return max(0.0, _BACKOFF["until"] - time.time())
+
+
+def note_rate_limit(problem):
+    """Look at an error or a log line. If it is Yahoo saying "too many requests", hold back for a while:
+    about 3 minutes the first time, doubling when it keeps happening, 15 at most. The wait is stretched
+    by a random amount so a room full of apps doesn't come back at the same instant."""
+    text = f"{type(problem).__name__} {problem}"
+    if "Too Many Requests" not in text and "RateLimit" not in text and "Rate limited" not in text:
+        return False
+    now = time.time()
+    if now >= _BACKOFF["until"]:
+        _BACKOFF["strikes"] = _BACKOFF["strikes"] + 1 if now - _BACKOFF["last"] < 45 * 60 else 1
+        _BACKOFF["last"] = now
+        _BACKOFF["until"] = now + min(15, 3 * 2 ** (_BACKOFF["strikes"] - 1)) * 60 * random.uniform(1.0, 1.4)
+    return True
+
+
+def rate_limit_text():
+    resume = datetime.now() + timedelta(seconds=rate_limited())
+    return ("Yahoo Finance is limiting how often this network can ask for prices. "
+            f"Trying again around {clock_time(resume)}.")
+
+
+def explain(error, fallback):
+    """What to tell the person when a download failed: the real reason if Yahoo is rate-limiting."""
+    note_rate_limit(error)
+    return rate_limit_text() if rate_limited() else fallback
+
+
+def refresh_words(settings):
+    minutes = REFRESH_PACES.get(settings.get("refresh"), REFRESH_PACES[DEFAULT_PACE])
+    return "every minute" if minutes == 1 else f"every {minutes} minutes"
+
+
+class YahooBusy(Exception):
+    """Raised instead of an empty answer when Yahoo Finance is rate-limiting this network."""
+
+    def __init__(self):
+        super().__init__(rate_limit_text())
+
+
+class _YahooLogWatch(logging.Handler):
+    """yfinance reports some failed downloads only in its log; this spots "Too Many Requests" there."""
+
+    def emit(self, record):
+        try:
+            note_rate_limit(record.getMessage())
+        except Exception:
+            pass
+
+
+logging.getLogger("yfinance").addHandler(_YahooLogWatch())
+
+
 def fetch_quotes(symbols):
-    """Last price, day change and a 1-month sparkline for each symbol (one request)."""
+    """Last price, day change and a 1-month sparkline for each symbol.
+
+    Prices downloaded in the last minute are reused, so Home, Markets, Watchlist, Portfolio and price
+    alerts don't each ask Yahoo for the same thing. While Yahoo is rate-limiting, known prices are served
+    as they are and only symbols never seen before are requested.
+    """
     if not symbols:
         return {}
+    now, holding = time.time(), rate_limited()
+    quotes, need = {}, []
+    with _CACHE_LOCK:
+        for sym in symbols:
+            hit = _CACHE.get(("quote", sym))
+            if hit and (holding or now - hit[0] < QUOTE_TTL):
+                quotes[sym] = hit[1]
+            elif sym not in need:
+                need.append(sym)
+    if not need:
+        return quotes
     with YF_LOCK:
-        df = yf.download(symbols, period="1mo", interval="1d", group_by="ticker",
+        df = yf.download(need, period="1mo", interval="1d", group_by="ticker",
                          auto_adjust=True, progress=False, threads=True)
-    quotes = {}
-    for sym in symbols:
+    fresh = {}
+    for sym in need:
         try:
             sub = df[sym] if isinstance(df.columns, pd.MultiIndex) else df
             sub = sub.dropna(subset=["Close"])
@@ -1257,14 +1344,48 @@ def fetch_quotes(symbols):
         close = sub["Close"]
         last = float(close.iloc[-1])
         prev = float(close.iloc[-2]) if len(close) > 1 else last
-        quotes[sym] = {
+        fresh[sym] = {
             "last": last, "prev": prev, "change": last - prev,
             "pct": (last / prev - 1) * 100 if prev else 0.0,
             "high": float(sub["High"].iloc[-1]), "low": float(sub["Low"].iloc[-1]),
             "volume": float(sub["Volume"].iloc[-1]),
             "spark": [float(v) for v in close.tail(22)],
         }
+    with _CACHE_LOCK:
+        for sym, item in fresh.items():
+            _CACHE[("quote", sym)] = (time.time(), item)
+    quotes.update(fresh)
+    if not quotes and rate_limited():
+        raise YahooBusy()
     return quotes
+
+
+def forget_quotes():
+    """F5: drop the shared prices so the next load asks Yahoo again (not while it is rate-limiting)."""
+    if rate_limited():
+        return
+    with _CACHE_LOCK:
+        for key in [k for k in _CACHE if k[0] == "quote"]:
+            del _CACHE[key]
+
+
+# --- Is there a newer version? -----------------------------------------------------------------
+def version_numbers(text):
+    """"v12", "12.0" and "12.0.0" all mean (12, 0, 0)."""
+    numbers = [int(n) for n in re.findall(r"\d+", str(text))[:3]]
+    return tuple(numbers + [0] * (3 - len(numbers)))
+
+
+def latest_release():
+    """The newest published version, e.g. "12", or None if it can't be told.
+
+    Read from where GitHub's "latest release" link redirects to. That needs no account, sends nothing
+    about this computer or the person using it, and isn't subject to GitHub's API limits.
+    """
+    req = request.Request(RELEASES_URL + "/latest", headers=HTTP_HEADERS, method="HEAD")
+    with request.urlopen(req, timeout=10) as resp:
+        found = re.search(r"/releases/tag/v?(\d+(?:\.\d+)*)", resp.geturl())
+    return found.group(1) if found else None
 
 
 def fetch_index_history(range_key):
@@ -1304,7 +1425,7 @@ def _cached(key, max_age, fetch):
     """Return a recent cached value, or fetch and remember it. Empty results aren't cached."""
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
-    if hit and time.time() - hit[0] < max_age:
+    if hit and (time.time() - hit[0] < max_age or rate_limited()):     # while rate-limited, keep what we have
         return hit[1]
     value = fetch()
     if value is not None and not getattr(value, "empty", False) and not (isinstance(value, dict) and not value):
@@ -1324,7 +1445,8 @@ def _download_history(symbol, period, interval):
     def fetch():
         try:
             hist = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=True)
-        except Exception:
+        except Exception as exc:
+            note_rate_limit(exc)
             return pd.DataFrame()
         if hist.empty:
             return hist
@@ -1360,7 +1482,7 @@ def fetch_info(symbol):
     """Company details, cached for 5 minutes. Incomplete answers are retried and never cached."""
     with _CACHE_LOCK:
         hit = _CACHE.get(("info", symbol))
-    if hit and time.time() - hit[0] < 5 * 60:
+    if hit and (time.time() - hit[0] < 5 * 60 or rate_limited()):
         return hit[1]
     info, complete = _fetch_info(symbol)
     if complete:
@@ -1954,6 +2076,7 @@ class Worker:
             try:
                 self.results.put((on_done, fn(), None))
             except Exception as exc:
+                note_rate_limit(exc)
                 self.results.put((on_error, None, exc))
         threading.Thread(target=job, daemon=True).start()
 
@@ -3390,6 +3513,237 @@ class ShortcutsDialog(tk.Toplevel):
         self.focus_set()
 
 
+def place_dialog(window, app, scroller, footer):
+    """Size a dialog to its contents and centre it over the app. On a short screen the contents scroll
+    and the footer, where the buttons are, stays in view."""
+    window.update_idletasks()
+    inner = scroller.inner
+    width, height = inner.winfo_reqwidth(), inner.winfo_reqheight()
+    room = window.winfo_screenheight() - S(120) - footer.winfo_reqheight()
+    if height <= room:
+        scroller.bar.pack_forget()
+    else:
+        width, height = width + scroller.bar.winfo_reqwidth(), room
+    height += footer.winfo_reqheight()
+    x = app.winfo_rootx() + (app.winfo_width() - width) // 2
+    y = app.winfo_rooty() + (app.winfo_height() - height) // 3
+    y = min(y, window.winfo_screenheight() - height - S(90))
+    window.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
+    set_dark_titlebar(window, DARK_UI)
+
+
+class SheetDialog(tk.Toplevel):
+    """A dialog with its content in .box and its buttons in .bar. Only one of each kind is open at a time."""
+    instance = None
+
+    @classmethod
+    def open(cls, app, *args):
+        try:
+            if cls.instance is not None and cls.instance.winfo_exists():
+                cls.instance.lift()
+                cls.instance.focus_set()
+                return cls.instance
+        except tk.TclError:
+            pass
+        cls.instance = cls(app, *args)
+        return cls.instance
+
+    def __init__(self, app, title):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title(f"{title} — {APP_NAME}")
+        self.transient(app)
+        self.resizable(False, False)
+        self.footer = tk.Frame(self, bg=BG)
+        self.footer.pack(fill="x", side="bottom")
+        divider(self.footer)
+        self.bar = tk.Frame(self.footer, bg=BG)
+        self.bar.pack(fill="x", padx=S(30), pady=S(14))
+        self.scroller = ScrollFrame(self)
+        self.scroller.pack(fill="both", expand=True)
+        self.box = tk.Frame(self.scroller.inner, bg=BG)
+        self.box.pack(fill="both", expand=True, padx=S(30), pady=(S(22), S(14)))
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def heading(self, text, top=18):
+        label(self.box, text, "eyebrow", fg=ACCENT).pack(anchor="w", pady=(S(top), S(8)))
+
+    def link(self, parent, text, command, side="left", pad=0):
+        """Accent-coloured text that works like a button."""
+        item = label(parent, text, "small", fg=ACCENT, cursor="hand2")
+        item.pack(side=side, padx=(0, S(pad)) if side == "left" else (S(pad), 0))
+        item.bind("<Button-1>", lambda e: command())
+        return item
+
+    def then(self, action):
+        """Close this dialog, then do something in the main window."""
+        app = self.app
+        self.destroy()
+        action(app)
+
+    def place(self):
+        place_dialog(self, self.app, self.scroller, self.footer)
+        self.focus_set()
+
+
+class WelcomeDialog(SheetDialog):
+    """Shown the first time the app opens (and from Settings): what the app is and how to get around."""
+    PAGES = [("Home", "Today's brief and a snapshot of the market"),
+             ("Markets", "Charts, key numbers and earnings for any stock"),
+             ("News", "24 outlets, labelled by political lean and paywall"),
+             ("Watchlist", "Stocks to keep an eye on, with price alerts"),
+             ("Portfolio", "Track real or practice holdings and how they're doing"),
+             ("Calendar", "Earnings dates, Fed meetings and economic reports"),
+             ("Bond Market", "Treasury yields and what the yield curve is saying")]
+    TIPS = [("Nothing here is real money.", "The app never buys or sells anything, and nothing in it is "
+                                           "financial advice."),
+            ("Prices can run a little behind.", "They come from Yahoo Finance and may be delayed by up to "
+                                                "15 minutes."),
+            ("Make it yours.", "Pick your own colors with the palette button at the top right.")]
+
+    def __init__(self, app):
+        super().__init__(app, "Welcome")
+        if not app.settings.get("welcomed"):        # remember straight away, so it is only ever shown once
+            app.settings["welcomed"] = VERSION
+            save_settings(app.settings)
+        box = self.box
+        label(box, "WELCOME", "eyebrow", fg=ACCENT).pack(anchor="w")
+        label(box, f"Welcome to {APP_NAME}", "page_title").pack(anchor="w", pady=(S(2), S(4)))
+        label(box, "Follow the markets, read the news behind the moves and keep track of a portfolio. "
+                   "Click anything below to go straight there.", "body", fg=MUTED, wraplength=S(660),
+              justify="left").pack(anchor="w")
+
+        self.heading("WHAT'S INSIDE")
+        grid = tk.Frame(box, bg=BG)
+        grid.pack(anchor="w")
+        cells = [(name, text, lambda n=name: self.then(lambda a: a.navigate(n))) for name, text in self.PAGES]
+        cells.append(("Search  ·  Ctrl + K", "Any stock, page or term, like “P/E” or “yield curve”",
+                      lambda: self.then(lambda a: a.header_search.focus())))
+        for i, (name, text, action) in enumerate(cells):
+            cell = card(grid)
+            cell.grid(row=i // 2, column=i % 2, sticky="nsew", padx=(0, S(10)), pady=(0, S(8)))
+            inner = tk.Frame(cell, bg=SURFACE, width=S(318), height=S(46))
+            inner.pack(padx=S(12), pady=S(7))
+            inner.pack_propagate(False)
+            label(inner, name, "body_semi").pack(anchor="w")
+            label(inner, text, "small", fg=MUTED).pack(anchor="w")
+            make_clickable(cell, action)
+
+        self.heading("GOOD TO KNOW", top=10)
+        for title, text in self.TIPS:
+            row = tk.Frame(box, bg=BG)
+            row.pack(anchor="w", pady=(0, S(5)))
+            label(row, "•", "body_semi", fg=ACCENT).pack(side="left", padx=(0, S(8)))
+            label(row, title, "small_semi").pack(side="left")
+            label(row, text, "small", fg=MUTED).pack(side="left", padx=(S(6), 0))
+
+        RoundButton(self.bar, "Start exploring", self.destroy).pack(side="right")
+        self.link(self.bar, "Change the colors", lambda: self.then(AppearanceDialog.open), pad=20)
+        self.link(self.bar, "Settings", lambda: self.then(SettingsDialog.open))
+        self.place()
+
+
+class SettingsDialog(SheetDialog):
+    """How often prices refresh, update checks, and shortcuts to the other dialogs. Changes apply at once."""
+    PACES = {"Live  ·  1 min": "live", "Balanced  ·  5 min": "balanced", "Light  ·  15 min": "light"}
+    UPDATES = {"Tell me about new versions": True, "Don't check": False}
+
+    def __init__(self, app):
+        super().__init__(app, "Settings")
+        box, settings, wrap = self.box, app.settings, S(520)
+        label(box, "Settings", "h2").pack(anchor="w")
+
+        self.heading("PRICE REFRESH", top=14)
+        pace = settings.get("refresh") if settings.get("refresh") in tuple(REFRESH_PACES) else DEFAULT_PACE
+        ChipGroup(box, list(self.PACES), self._set_pace,
+                  value=next(n for n, p in self.PACES.items() if p == pace)).pack(anchor="w")
+        label(box, "How often the page you are looking at fetches new prices by itself. Press F5 to refresh "
+                   "right away. On shared school or office Wi-Fi choose Balanced or Light: Yahoo Finance slows "
+                   "down networks that ask too often.", "small", fg=MUTED, wraplength=wrap,
+              justify="left").pack(anchor="w", pady=(S(8), 0))
+        label(box, f"While the stock market is closed, prices are checked every {CLOSED_MARKET_MINUTES} minutes "
+                   "at most.", "small", fg=FAINT, wraplength=wrap, justify="left").pack(anchor="w", pady=(S(4), 0))
+
+        self.heading("UPDATES")
+        ChipGroup(box, list(self.UPDATES), self._set_updates,
+                  value=next(n for n, on in self.UPDATES.items() if on == (settings.get("check_updates") is not False))
+                  ).pack(anchor="w")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", pady=(S(8), 0))
+        self.version_note = label(row, f"You have version {VERSION}.", "small", fg=MUTED)
+        self.version_note.pack(side="left", padx=(0, S(12)))
+        self.link(row, "Check now", self._check_now, pad=12)
+        self.get_link = self.link(row, "", lambda: None)
+        label(box, "Once a day the app asks GitHub which version is newest. Nothing about you or this computer "
+                   "is sent.", "small", fg=FAINT, wraplength=wrap, justify="left").pack(anchor="w", pady=(S(4), 0))
+
+        self.heading("MORE")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w")
+        self.link(row, "Colors & appearance", lambda: self.then(AppearanceDialog.open), pad=22)
+        self.link(row, "Welcome screen", lambda: self.then(WelcomeDialog.open), pad=22)
+        self.link(row, "Keyboard shortcuts", lambda: self.then(ShortcutsDialog.open))
+
+        RoundButton(self.bar, "Done", self.destroy, kind="dark").pack(side="right")
+        self.place()
+
+    def _set_pace(self, choice):
+        self.app.settings["refresh"] = self.PACES[choice]
+        save_settings(self.app.settings)
+        self.app.pace_changed()
+
+    def _set_updates(self, choice):
+        self.app.settings["check_updates"] = self.UPDATES[choice]
+        save_settings(self.app.settings)
+
+    def _check_now(self):
+        self.version_note.configure(text="Checking…")
+        self.get_link.configure(text="")
+        self.app.check_for_update(manual=True, report=self._checked)
+
+    def _checked(self, newer, message):
+        try:
+            self.version_note.configure(text=message)
+            if newer:
+                self.get_link.configure(text="Get the update")
+                self.get_link.bind("<Button-1>", lambda e: self.then(lambda a: UpdateDialog.open(a, newer)))
+        except tk.TclError:     # the dialog was closed while GitHub was answering
+            pass
+
+
+class UpdateDialog(SheetDialog):
+    """A newer version is out: how to get it."""
+
+    def __init__(self, app, latest):
+        super().__init__(app, "Update available")
+        box = self.box
+        folder = os.path.dirname(os.path.abspath(sys.executable))
+        installed = getattr(sys, "frozen", False) and os.path.exists(os.path.join(folder, "install.json"))
+        label(box, "UPDATE AVAILABLE", "eyebrow", fg=ACCENT).pack(anchor="w")
+        label(box, f"Version {latest} is ready", "h2").pack(anchor="w", pady=(S(4), S(2)))
+        label(box, f"You have version {VERSION}. Your watchlist, portfolio and settings are kept when you update.",
+              "small", fg=MUTED, wraplength=S(460), justify="left").pack(anchor="w", pady=(0, S(12)))
+        if installed or not getattr(sys, "frozen", False):
+            steps = ["Press Download. Your browser saves InsightByMilton-Setup.exe.",
+                     f"Close {APP_NAME}.",
+                     "Open the downloaded file and click Update."]
+            button, target = "Download", SETUP_URL
+        else:       # a copy that was unzipped rather than installed
+            steps = ["Press Open the download page and save the new .zip file.",
+                     f"Close {APP_NAME} and extract the zip.",
+                     "Use the new folder in place of this one."]
+            button, target = "Open the download page", RELEASES_URL + "/latest"
+        for number, text in enumerate(steps, start=1):
+            row = tk.Frame(box, bg=BG)
+            row.pack(anchor="w", pady=S(3))
+            label(row, f"{number}.", "body_semi", fg=ACCENT, width=2, anchor="w").pack(side="left")
+            label(row, text, "body", wraplength=S(430), justify="left").pack(side="left")
+        RoundButton(self.bar, button, lambda: (open_link(target), self.destroy())).pack(side="right")
+        RoundButton(self.bar, "Later", self.destroy, kind="ghost").pack(side="right", padx=S(10))
+        self.link(self.bar, "See what's new", lambda: open_link(RELEASES_URL + "/latest"))
+        self.place()
+
+
 class AppearanceDialog(tk.Toplevel):
     """Colors & appearance: light or dark mode, colour themes, colour-blind friendly gains, custom colours."""
     instance = None
@@ -3511,20 +3865,7 @@ class AppearanceDialog(tk.Toplevel):
 
         self._refresh()
         self.bind("<Escape>", lambda e: self.destroy())
-        self.update_idletasks()
-        inner = self.scroller.inner
-        width, height = inner.winfo_reqwidth(), inner.winfo_reqheight()
-        room = self.winfo_screenheight() - S(120) - footer.winfo_reqheight()
-        if height <= room:
-            self.scroller.bar.pack_forget()
-        else:                                   # short screen: the options scroll, the buttons stay put
-            width, height = width + self.scroller.bar.winfo_reqwidth(), room
-        height += footer.winfo_reqheight()
-        x = app.winfo_rootx() + (app.winfo_width() - width) // 2
-        y = app.winfo_rooty() + (app.winfo_height() - height) // 3
-        y = min(y, self.winfo_screenheight() - height - S(90))
-        self.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
-        set_dark_titlebar(self, DARK_UI)
+        place_dialog(self, app, self.scroller, footer)
         self.focus_set()
 
     def _heading(self, parent, text, top=16):
@@ -3713,7 +4054,7 @@ class AlertDialog(tk.Toplevel):
         self.unit = label(row, "US$", "body", fg=MUTED)
         self.unit.pack(side="left", padx=S(10))
         self.note = label(box, "You'll get a Windows notification while Insight by Milton is open (it can be "
-                               "minimized). Prices are checked every minute.", "small", fg=FAINT,
+                               f"minimized). Prices are checked {refresh_words(app.settings)}.", "small", fg=FAINT,
                           wraplength=S(460), justify="left")
         self.note.pack(anchor="w", pady=(S(4), S(14)))
         buttons = tk.Frame(box, bg=BG)
@@ -4099,6 +4440,13 @@ class AppSearch:
             "Color themes, your own colors, color-blind friendly gains and losses",
             "theme colour color palette accent background customize customise appearance preset look style "
             "colorblind colourblind high contrast settings", "Ctrl+,")
+        add("ACTIONS", "Settings", lambda: SettingsDialog.open(app),
+            "How often prices refresh, update checks", "settings preferences options refresh speed pace wifi "
+            "rate limit slow data update interval")
+        add("ACTIONS", "Check for updates", lambda: (SettingsDialog.open(app), SettingsDialog.instance._check_now()),
+            f"You have version {VERSION}", "update upgrade new version latest download installer")
+        add("ACTIONS", "Welcome screen", lambda: WelcomeDialog.open(app), "A quick tour of what's inside",
+            "welcome tour getting started introduction help guide tutorial first")
         add("ACTIONS", "Send an idea", lambda: FeedbackDialog.open(app), "Suggest a feature or report a bug",
             "feedback suggestion bug contact email")
         add("ACTIONS", "Keyboard shortcuts", lambda: ShortcutsDialog.open(app), "F1", "keys hotkeys", "F1")
@@ -4385,13 +4733,15 @@ class CriteriaDialog(tk.Toplevel):
 # 8. Pages
 # -----------------------------------------------------------------------------
 class Page(tk.Frame):
-    refresh_ms = None  # auto-refresh interval while the page is visible
+    refresh_ms = None  # auto-refresh interval while the page is visible (see App.refresh_delay)
 
     def __init__(self, app):
         super().__init__(app.body, bg=BG)
         self.app = app
         self.loaded = False
         self._timer = None
+        self._refreshed = 0.0   # when the page last loaded or refreshed itself
+        self._missed = False    # a refresh was skipped: window minimized, or Yahoo asked us to slow down
         self.build()
 
     def build(self):
@@ -4406,7 +4756,11 @@ class Page(tk.Frame):
     def show(self):
         if not self.loaded:
             self.loaded = True
+            self._refreshed = time.time()
             self.first_load()
+        elif self.refresh_ms and (self._missed or time.time() - self._refreshed
+                                  > self.app.refresh_delay(self.refresh_ms, exact=True) / 1000):
+            self.auto_refresh()     # coming back to a page whose numbers have gone stale
         self._schedule()
 
     def hide(self):
@@ -4414,12 +4768,23 @@ class Page(tk.Frame):
             self.after_cancel(self._timer)
             self._timer = None
 
+    def auto_refresh(self):
+        """Refresh, unless nobody can see the window or Yahoo has asked this network to slow down."""
+        if self.app.state() == "iconic" or rate_limited():
+            self._missed = True
+            return
+        self._missed, self._refreshed = False, time.time()
+        self.refresh()
+
     def _schedule(self):
         if self.refresh_ms:
-            self._timer = self.after(self.refresh_ms, self._tick)
+            delay = self.app.refresh_delay(self.refresh_ms)
+            if self._missed and rate_limited():     # try again shortly after Yahoo's time-out ends
+                delay = min(delay, int((rate_limited() + random.uniform(10, 90)) * 1000))
+            self._timer = self.after(delay, self._tick)
 
     def _tick(self):
-        self.refresh()
+        self.auto_refresh()
         self._schedule()
 
     def page_header(self, parent, title, subtitle):
@@ -4546,7 +4911,8 @@ class HomePage(Page):
         self.brief_label.configure(text=self._compose_brief(quotes))
 
     def _snapshot_failed(self, error):
-        self.updated_label.configure(text="Couldn't reach Yahoo Finance — retrying in a minute", fg=DOWN)
+        self.updated_label.configure(text=explain(error, "Couldn't reach Yahoo Finance. Trying again shortly."),
+                                     fg=DOWN)
 
     @staticmethod
     def _compose_brief(q):
@@ -4995,7 +5361,7 @@ class MarketsPage(Page):
         symbols = [s for _, s in INDEXES] + [s for _, s in SECTORS] + [s for s, _ in BIG_STOCKS]
         self.app.worker.run(lambda: fetch_quotes(symbols), self._show_overview_quotes,
                             lambda e: self.overview_note.configure(
-                                text="Couldn't reach Yahoo Finance — retrying in a minute.", fg=DOWN))
+                                text=explain(e, "Couldn't reach Yahoo Finance. Trying again shortly."), fg=DOWN))
         self._load_index_chart()
 
     def _show_overview_quotes(self, quotes):
@@ -5634,7 +6000,8 @@ class MarketsPage(Page):
     def _failed(self, rid, error):
         if rid != self.request_id:
             return
-        msg = str(error) if isinstance(error, LookupError) else "Couldn't load market data. Check your connection."
+        msg = str(error) if isinstance(error, LookupError) else \
+            explain(error, "Couldn't load market data. Check your connection.")
         self._chart_message(msg)
         self.app.set_status(msg)
 
@@ -6275,7 +6642,7 @@ class WatchlistPage(Page):
         self.render()
 
     def _quotes_failed(self, error):
-        self.message.configure(text="Couldn't refresh prices. Check your connection.", fg=DOWN)
+        self.message.configure(text=explain(error, "Couldn't refresh prices. Check your connection."), fg=DOWN)
 
     def _watchlist_changed(self):
         if self.loaded:
@@ -6906,8 +7273,8 @@ class PortfolioPage(Page):
         if self.data is None:
             show_skeleton(self.table, blocks=2, lines=2)
         self.app.worker.run(lambda: fetch_portfolio(symbols), self._got,
-                            lambda e: self.form_msg.configure(text="Couldn't refresh prices. Check your connection.",
-                                                              fg=DOWN))
+                            lambda e: self.form_msg.configure(
+                                text=explain(e, "Couldn't refresh prices. Check your connection."), fg=DOWN))
         self.perf_loader.show("Loading history…")
         self.app.worker.run(lambda: fetch_portfolio_history(tuple(symbols)), self._got_history,
                             lambda e: self.perf_loader.hide())
@@ -7432,11 +7799,16 @@ class App(tk.Tk, _DropSupport):
             self.bind_all(key, lambda e, h=how: self._key(e, lambda: self._scroll_page(h), typing_blocks=True))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(5000, self._check_alerts)
+        self.after(9000, self.check_for_update)
+        if not self.settings.get("welcomed"):
+            self.after(700, lambda: WelcomeDialog.open(self))
         self.app_search = AppSearch(self, self.header_search)   # needs the pages, so it's set up last
         self.bind_all("<Control-k>", lambda e: self._key(e, self.header_search.focus))
         self._enable_drop()
         self.bind("<Configure>", lambda e: e.widget is self and self._close_suggestions())
+        self.bind("<Map>", lambda e: e.widget is self and self._restored())
         set_dark_titlebar(self, DARK_UI)
+        self._holding = False       # True while Yahoo Finance is rate-limiting this network
         self._tick()
 
     # --- window setup -----------------------------------------------------------
@@ -7550,8 +7922,7 @@ class App(tk.Tk, _DropSupport):
         self.market_dot.pack(side="left", padx=(0, S(8)))
         self.market_label = label(inner, "", "small", fg=MUTED)
         self.market_label.pack(side="left")
-        self.status_label = label(inner, "", "small", fg=FAINT)
-        self.status_label.pack(side="left", padx=S(24))
+        self.status_label = label(inner, "", "small", fg=FAINT, anchor="w")
         self.clock_label = label(inner, "", "small_semi")
         self.clock_label.pack(side="right")
         keys = label(inner, "Shortcuts (F1)", "small", fg=ACCENT, cursor="hand2")
@@ -7560,8 +7931,26 @@ class App(tk.Tk, _DropSupport):
         idea = label(inner, "Send an idea", "small", fg=ACCENT, cursor="hand2")
         idea.pack(side="right", padx=(0, S(18)))
         idea.bind("<Button-1>", lambda e: FeedbackDialog.open(self))
-        label(inner, f"© {datetime.now().year} The Milton Review  ·  Not financial advice", "small",
-              fg=FAINT).pack(side="right", padx=S(24))
+        prefs = label(inner, "Settings", "small", fg=ACCENT, cursor="hand2")
+        prefs.pack(side="right", padx=(0, S(18)))
+        prefs.bind("<Button-1>", lambda e: SettingsDialog.open(self))
+        self.legal_label = label(inner, f"© {datetime.now().year} The Milton Review  ·  Not financial advice",
+                                 "small", fg=FAINT)
+        self.legal_label.pack(side="right", padx=S(24))
+        self.status_label.pack(side="left", fill="x", expand=True, padx=S(24))   # last: gets the room left over
+        self._footer = inner
+        inner.bind("<Configure>", lambda e: e.widget is inner and self._fit_footer())
+
+    def _fit_footer(self):
+        """Leave the copyright line out when there isn't room for it and the whole status message."""
+        inner, legal = self._footer, self.legal_label
+        room, shown, need = inner.winfo_width(), bool(legal.winfo_manager()), inner.winfo_reqwidth()
+        if room <= 1:
+            return
+        if shown and need > room:
+            legal.pack_forget()
+        elif not shown and need + legal.winfo_reqwidth() + 2 * S(24) <= room:
+            legal.pack(side="right", padx=S(24), before=self.status_label)
 
     # --- navigation ---------------------------------------------------------------
     def show(self, name):
@@ -7626,14 +8015,74 @@ class App(tk.Tk, _DropSupport):
             self.focus_set()
 
     def reload_page(self):
+        forget_quotes()
         page = self.pages[self.current]
+        page._missed, page._refreshed = False, time.time()
         if self.current == "Source" and page.source:
             self.news.get(lambda n: page.open(page.source["id"]), force=True)
         elif hasattr(page, "reload"):
             page.reload()
         else:
             page.refresh()
-        self.set_status("Refreshing…")
+        self.set_status(rate_limit_text() if rate_limited() else "Refreshing…")
+
+    # --- refresh pace ---------------------------------------------------------------------
+    def refresh_delay(self, base_ms, exact=False, follow_market=True):
+        """Milliseconds until the next automatic refresh.
+
+        Pages that refresh prices follow the pace chosen in Settings and slow right down while the stock
+        market is closed. The wait varies by 15% so a classroom of apps doesn't all ask at the same moment.
+        """
+        minutes = REFRESH_PACES.get(self.settings.get("refresh"), REFRESH_PACES[DEFAULT_PACE])
+        delay = max(base_ms, minutes * 60_000)
+        if follow_market and base_ms < 5 * 60_000 and not market_status()[0]:
+            delay = max(delay, CLOSED_MARKET_MINUTES * 60_000)
+        return int(delay if exact else delay * random.uniform(0.85, 1.15))
+
+    def pace_changed(self):
+        """Settings changed the pace: restart the visible page's timer with the new wait."""
+        page = self.pages[self.current]
+        page.hide()
+        page._schedule()
+        self.set_status(f"Prices now refresh {refresh_words(self.settings)}")
+
+    def _restored(self):
+        """The window is back from being minimized: catch up if a refresh was skipped meanwhile."""
+        page = self.pages.get(self.current) if hasattr(self, "pages") else None
+        if page is not None and page._missed and not rate_limited():
+            page.auto_refresh()
+
+    # --- updates ----------------------------------------------------------------------------
+    _update_announced = False       # the banner is shown once per run, not after every theme change
+
+    def check_for_update(self, manual=False, report=None):
+        """Ask GitHub which version is newest: by itself at most once a day, or now when asked to.
+
+        report(newer version or None, message) is called with the outcome when given.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        if not manual:
+            if self.settings.get("check_updates") is False:
+                return
+            if self.settings.get("update_checked") == today:
+                self._update_result(self.settings.get("update_latest"), False, None)
+                return
+
+        def done(latest):
+            self.settings["update_checked"], self.settings["update_latest"] = today, latest
+            self._update_result(latest, manual, report)
+
+        self.worker.run(latest_release, done,
+                        lambda e: report and report(None, "Couldn't reach GitHub. Check your connection."))
+
+    def _update_result(self, latest, manual, report):
+        newer = latest if latest and version_numbers(latest) > version_numbers(VERSION) else None
+        if report:
+            report(newer, f"Version {newer} is available." if newer else f"You have the newest version ({VERSION}).")
+        if newer and (manual or not App._update_announced):
+            App._update_announced = True
+            self.show_banner(f"Version {newer} of {APP_NAME} is available.", "Get the update",
+                             lambda: UpdateDialog.open(self, newer))
 
     def screenshot_page(self):
         page = self.pages[self.current]
@@ -7696,12 +8145,12 @@ class App(tk.Tk, _DropSupport):
 
     # --- price alerts ------------------------------------------------------------------
     def _check_alerts(self):
-        """Every minute: fetch prices for active alerts and fire any that are hit."""
+        """At the chosen refresh pace: fetch prices for active alerts and fire any that are hit."""
         active = self.alerts.active()
-        if active:
+        if active and not rate_limited():
             symbols = list(dict.fromkeys(a["symbol"] for a in active))
             self.worker.run(lambda: fetch_quotes(symbols), self._evaluate_alerts, lambda e: None)
-        self.after(60_000, self._check_alerts)
+        self.after(self.refresh_delay(60_000, follow_market=False), self._check_alerts)
 
     def _evaluate_alerts(self, quotes):
         fired = []
@@ -7765,6 +8214,7 @@ class App(tk.Tk, _DropSupport):
 
     def set_status(self, text):
         self.status_label.configure(text=text)
+        self.after_idle(self._fit_footer)
 
     # --- events -----------------------------------------------------------------------
     def _on_wheel(self, event):
@@ -7790,6 +8240,15 @@ class App(tk.Tk, _DropSupport):
         if now.second == 0 or not hasattr(self, "_ticked"):
             self._ticked = True
             self.pages["Home"].update_status()
+        holding = rate_limited() > 0
+        if holding and not self._holding:       # say so once, when it starts
+            resume = clock_time(datetime.now() + timedelta(seconds=rate_limited()))
+            self.show_banner("Yahoo Finance is limiting requests from this network, which is common on shared "
+                             f"Wi-Fi. Prices resume around {resume}.", "Refresh less often",
+                             lambda: SettingsDialog.open(self))
+        elif self._holding and not holding:
+            self.set_status("Prices are updating again")
+        self._holding = holding
         self.after(1000, self._tick)
 
 

@@ -13,7 +13,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10%2B-3572A5?logo=python&logoColor=white" alt="Python"/>
   <img src="https://img.shields.io/badge/platform-Windows-0078d4?logo=windows&logoColor=white" alt="Windows"/>
-  <img src="https://img.shields.io/badge/version-v11-D47A5D" alt="v11"/>
+  <img src="https://img.shields.io/badge/version-v12-D47A5D" alt="v12"/>
   <img src="https://img.shields.io/badge/data-Yahoo%20Finance-6001D2" alt="Yahoo Finance"/>
 </p>
 
@@ -61,9 +61,9 @@ No Python, no zip to extract and no administrator password.
 
 Insight by Milton is a desktop app built by **Aidan Bologna** as a companion to [The Milton Review](https://www.themiltonreview.net) — an independent finance publication focused on clear, accessible market commentary.
 
-The idea started simply: give Milton Review readers a native Windows app that shows the same data the articles talk about, styled to match the site. It grew from a 189-line prototype in June 2026 into a full seven-page application across eleven versions — adding fundamentals analysis, earnings summaries, 24 curated news outlets with political bias ratings, a portfolio tracker, price alerts, an economic calendar, and more.
+The idea started simply: give Milton Review readers a native Windows app that shows the same data the articles talk about, styled to match the site. It grew from a 189-line prototype in June 2026 into a full seven-page application across twelve versions — adding fundamentals analysis, earnings summaries, 24 curated news outlets with political bias ratings, a portfolio tracker, price alerts, an economic calendar, and more.
 
-Everything is built with Python's standard library and a small set of open-source packages. No subscription, no account, no telemetry. Market data comes from Yahoo Finance; news comes straight from each publisher's RSS feed; economic calendar data is pulled from official U.S. government sources.
+Everything is built with Python's standard library and a small set of open-source packages. No subscription, no account, no telemetry. (Once a day it asks GitHub whether a newer version exists; that can be switched off in Settings.) Market data comes from Yahoo Finance; news comes straight from each publisher's RSS feed; economic calendar data is pulled from official U.S. government sources.
 
 | | |
 |---|---|
@@ -73,7 +73,7 @@ Everything is built with Python's standard library and a small set of open-sourc
 | **Built with** | Python 3.10+ · Tkinter · yfinance · matplotlib · Pillow |
 | **Platform** | Windows 10/11 |
 | **Started** | June 2026 |
-| **Current version** | v11 (November 2026) |
+| **Current version** | v12 (November 2026) |
 
 ---
 
@@ -121,6 +121,17 @@ Everything is built with Python's standard library and a small set of open-sourc
 - **Your own colors** for the accent, background, cards, text, gains and losses, picked from a color wheel or typed as a hex code such as `#D47A5D`
 - A live preview before you apply, and text colors that would be unreadable are refused
 
+**Welcome screen** &nbsp; The first launch opens a one-page tour: what each page is for, that nothing in the app is real money, and where prices come from. Reopen it from **Settings**.
+
+**Made for a classroom** &nbsp; Yahoo Finance slows down a network that asks for prices too often, and thirty students on one Wi-Fi connection look like one very busy computer. So the app goes easy on it:
+
+- Prices refresh every **5 minutes** by default. **Settings** (footer, or `Ctrl+K`) offers 1 minute or 15 minutes instead, and `F5` still refreshes at once
+- Home, Markets, Watchlist, Portfolio and price alerts share what was already downloaded
+- Refreshing pauses while the window is minimized and slows down while the stock market is closed
+- If Yahoo answers "too many requests", the app says so, keeps showing the last prices and tries again a few minutes later by itself
+
+**Update notices** &nbsp; When a newer version is published here, a banner offers the download. The check runs once a day and can be turned off in Settings.
+
 ---
 
 ## Run from source
@@ -139,7 +150,7 @@ pip install pyinstaller
 python installers\windows\build_installer.py
 ```
 
-Output in `release\`: **`InsightByMilton-Setup.exe`** (the installer) and **`insightByMilton-v11-windows.zip`** (portable copy). Attach both to a GitHub release and the download button above picks up the new installer automatically. See [`installers/`](installers/) for details, Linux and macOS.
+Output in `release\`: **`InsightByMilton-Setup.exe`** (the installer) and **`insightByMilton-v12-windows.zip`** (portable copy). Attach both to a GitHub release and the download button above picks up the new installer automatically. See [`installers/`](installers/) for details, Linux and macOS.
 
 ---
 
@@ -163,6 +174,7 @@ Browse the full history on the [Releases](../../releases) page or the [Commits](
 
 | | Version | Highlights |
 |---|---|---|
+| v12 | Classroom Ready | First-launch welcome screen · gentler price refresh for shared Wi-Fi · Settings · update notices |
 | v11 | Windows Installer & Custom Colors | One-file installer with shortcuts and uninstall · eight color themes · your own colors · color-blind friendly gains and losses · download 44% smaller (113 MB → 63 MB) |
 | v10 | Paywall Labels & Better Stock News | FREE / LIMITED / PAYWALL tags · improved stock headline matching · earnings box |
 | v9 | Selling & App Search | Sell shares · sales history · Ctrl+K universal search |
