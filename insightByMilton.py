@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, colorchooser
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
@@ -83,7 +83,8 @@ THEMES = {
         "FAIR": "#D9AE52", "FAIR_SOFT": "#3A3020",
     },
 }
-THEME = "light"
+THEME = "light"           # the mode in use: "light" or "dark"
+DARK_UI = False           # True when the page background is dark (logo lettering, title bar)
 COLOR_NAMES = ("BG", "SURFACE", "SAND", "BORDER", "INK", "MUTED", "FAINT", "ACCENT", "ACCENT_DARK",
                "ACCENT_SOFT", "UP", "UP_SOFT", "DOWN", "DOWN_SOFT", "FAIR", "FAIR_SOFT")
 (BG, SURFACE, SAND, BORDER, INK, MUTED, FAINT, ACCENT, ACCENT_DARK, ACCENT_SOFT,
@@ -91,11 +92,126 @@ COLOR_NAMES = ("BG", "SURFACE", "SAND", "BORDER", "INK", "MUTED", "FAINT", "ACCE
 RATING_STYLE = {}         # rating -> (text colour, pill colour, word), filled by apply_theme()
 
 
-def apply_theme(name):
+# Colour themes offered in "Colors & appearance". Each names only the colours it changes from Milton's own;
+# the in-between shades (panels, hairlines, secondary text, soft pills) are mixed to match by build_palette().
+COLOR_PRESETS = {
+    "Milton": {"light": {}, "dark": {}},
+    "Ocean": {"light": {"ACCENT": "#2E6F9E", "BG": "#F6F9FC", "SURFACE": "#FFFFFF", "INK": "#16212B"},
+              "dark": {"ACCENT": "#6FB1E0", "BG": "#10151A", "SURFACE": "#182028", "INK": "#E6EDF3"}},
+    "Forest": {"light": {"ACCENT": "#3C7A57", "BG": "#F7FAF4", "SURFACE": "#FFFFFF", "INK": "#1A211C"},
+               "dark": {"ACCENT": "#7CC79A", "BG": "#111612", "SURFACE": "#1A211B", "INK": "#E6EDE5"}},
+    "Plum": {"light": {"ACCENT": "#7B4B94", "BG": "#FAF7FB", "SURFACE": "#FFFFFF", "INK": "#201A24"},
+             "dark": {"ACCENT": "#C09AD6", "BG": "#151217", "SURFACE": "#1F1A22", "INK": "#ECE6F0"}},
+    "Rose": {"light": {"ACCENT": "#C2476D", "BG": "#FDF7F8", "SURFACE": "#FFFFFF", "INK": "#231A1C"},
+             "dark": {"ACCENT": "#EC8FAB", "BG": "#171213", "SURFACE": "#221A1C", "INK": "#F0E6E8"}},
+    "Gold": {"light": {"ACCENT": "#A8741A", "BG": "#FCFAF3", "SURFACE": "#FFFFFF", "INK": "#211D14"},
+             "dark": {"ACCENT": "#E0B354", "BG": "#16140F", "SURFACE": "#201D16", "INK": "#EFE9DA"}},
+    "Graphite": {"light": {"ACCENT": "#4A5A6A", "BG": "#F5F6F7", "SURFACE": "#FFFFFF", "INK": "#1B1D1F"},
+                 "dark": {"ACCENT": "#A9B8C6", "BG": "#131415", "SURFACE": "#1C1E20", "INK": "#E8EAEC"}},
+    "High contrast": {
+        "light": {"ACCENT": "#0B4FC4", "BG": "#FFFFFF", "SURFACE": "#FFFFFF", "INK": "#000000", "UP": "#0A6B2D",
+                  "DOWN": "#B00020", "BORDER": "#767676", "MUTED": "#333333", "FAINT": "#555555"},
+        "dark": {"ACCENT": "#FFD54A", "BG": "#000000", "SURFACE": "#0E0E0E", "INK": "#FFFFFF", "UP": "#5BE38A",
+                 "DOWN": "#FF8A7A", "BORDER": "#8A8A8A", "MUTED": "#DDDDDD", "FAINT": "#BBBBBB"}},
+}
+# Blue for gains and orange for losses stay distinct with red-green colour blindness; "fair" turns grey.
+COLORBLIND_UPDOWN = {"light": {"UP": "#0F6CB5", "DOWN": "#C2570A", "FAIR": "#6B6B6B"},
+                     "dark": {"UP": "#6DB6F2", "DOWN": "#F2A25C", "FAIR": "#A8A8A8"}}
+
+
+def is_hex(value):
+    """True for colours written like "#D47A5D"."""
+    return isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value) is not None
+
+
+def blend(color, other, amount):
+    """Mix two hex colours; amount=0 gives color, 1 gives other."""
+    a = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(other[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
+
+
+def luminance(color):
+    """How bright a hex colour looks, from 0 (black) to 1 (white) — WCAG relative luminance."""
+    total = 0.0
+    for i, weight in ((1, 0.2126), (3, 0.7152), (5, 0.0722)):
+        v = int(color[i:i + 2], 16) / 255
+        total += weight * (v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    return total
+
+
+def contrast(a, b):
+    """WCAG contrast ratio between two colours: 1 (the same) up to 21 (black on white)."""
+    hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def text_on(fill, page=None, ink=None):
+    """Colour for words drawn on a filled shape (buttons, badges): the page colour if it reads well, else ink."""
+    page, ink = page or BG, ink or INK
+    if contrast(page, fill) >= 2.4 or contrast(page, fill) >= contrast(ink, fill):
+        return page
+    return ink
+
+
+def build_palette(mode, appearance=None):
+    """All 16 colours for one mode: Milton's theme with the chosen colour theme, the colour-blind friendly
+    gains/losses and any custom colours laid on top. Shades that sit between two colours are re-mixed.
+
+    appearance is the "appearance" entry of settings.json:
+        {"preset": "Ocean", "updown": "classic" | "colorblind",
+         "custom": {"light": {"ACCENT": "#123ABC", ...}, "dark": {...}}}
+    """
+    mode = mode if mode in ("light", "dark") else "light"
+    appearance = appearance if isinstance(appearance, dict) else {}
+    custom = appearance.get("custom")
+    custom = custom.get(mode) if isinstance(custom, dict) else None
+    custom = {k: v for k, v in custom.items() if k in COLOR_NAMES and is_hex(v)} if isinstance(custom, dict) else {}
+    family = mode
+    if "BG" in custom:      # a custom background decides whether the light or dark supporting colours are used
+        family = "dark" if luminance(custom["BG"]) < 0.2 else "light"
+    preset = appearance.get("preset")
+    chosen = dict(COLOR_PRESETS.get(preset, {}).get(family, {})) if isinstance(preset, str) else {}
+    if appearance.get("updown") == "colorblind":
+        chosen.update(COLORBLIND_UPDOWN[family])
+    chosen.update(custom)
+    base = THEMES[family]
+    colors = {**base, **chosen}
+    dark = luminance(colors["BG"]) < 0.2
+
+    def card_color():
+        return blend(colors["BG"], colors["INK"], 0.045) if dark else blend(colors["BG"], "#FFFFFF", 0.85)
+
+    def mix(name, value):   # re-mix a shade unless it was picked by hand
+        if name not in chosen:
+            colors[name] = value
+
+    if contrast(colors["INK"], colors["BG"]) < 3:       # whatever was picked, text has to stay readable
+        colors["INK"] = base["INK"]
+    changed = {name for name in COLOR_NAMES if colors[name].lower() != base[name].lower()}
+    if changed & {"BG", "INK"}:
+        mix("SURFACE", card_color())
+    if contrast(colors["INK"], colors["SURFACE"]) < 3:
+        colors["SURFACE"] = card_color()
+    if changed & {"BG", "INK"}:
+        mix("SAND", blend(colors["BG"], colors["INK"], 0.09 if dark else 0.05))
+        mix("BORDER", blend(colors["BG"], colors["INK"], 0.165 if dark else 0.11))
+        mix("MUTED", blend(colors["INK"], colors["BG"], 0.27))
+        mix("FAINT", blend(colors["INK"], colors["BG"], 0.46 if dark else 0.5))
+    if "ACCENT" in changed:
+        mix("ACCENT_DARK", blend(colors["ACCENT"], "#000000", 0.16))
+    for name in ("ACCENT", "UP", "DOWN", "FAIR"):
+        if name in changed or colors["SURFACE"].lower() != base["SURFACE"].lower():
+            mix(name + "_SOFT", blend(colors["SURFACE"], colors[name], 0.16))
+    return colors
+
+
+def apply_theme(name, appearance=None):
     """Switch every colour constant. Called before the window's widgets are built."""
-    global THEME, _LOGO
-    THEME = name if name in THEMES else "light"
-    globals().update(THEMES[THEME])
+    global THEME, DARK_UI, _LOGO
+    THEME = name if name in ("light", "dark") else "light"
+    globals().update(build_palette(THEME, appearance))
+    DARK_UI = luminance(BG) < 0.2
     RATING_STYLE.clear()
     RATING_STYLE.update({"good": (UP, UP_SOFT, "Good"), "fair": (FAIR, FAIR_SOFT, "Fair"),
                          "weak": (DOWN, DOWN_SOFT, "Weak"), None: (FAINT, SAND, "Not rated")})
@@ -128,7 +244,7 @@ def set_dark_titlebar(window, dark):
         pass
 
 
-VERSION = "10.0"
+VERSION = "11.0"
 APP_NAME = "Insight by Milton"
 SITE_URL = "https://www.themiltonreview.net"
 BLOG_URL = SITE_URL + "/blog"
@@ -1889,6 +2005,7 @@ SHORTCUTS = [
     ("F5  or  Ctrl + R", "Refresh this page"),
     ("Page Up / Page Down", "Scroll the page"),
     ("Home / End", "Jump to the top or bottom of the page"),
+    ("Ctrl + ,", "Open Colors & appearance"),
     ("F1", "Show this list"),
 ]
 
@@ -2313,7 +2430,7 @@ def _caption_font(size):
 def themed_logo():
     """The logo with transparent background; in dark mode its black lettering turns light."""
     logo = Image.open(resource_path("assets", "logo.png")).convert("RGBA")
-    if THEME == "dark":
+    if DARK_UI:
         pixels = np.array(logo)
         dark = pixels[..., :3].mean(axis=2) < 110
         pixels[dark, :3] = [int(INK[i:i + 2], 16) for i in (1, 3, 5)]
@@ -2376,7 +2493,7 @@ class RoundButton(tk.Canvas):
     @staticmethod
     def styles():  # fill, text, hover fill, outline — read at draw time so themes apply
         return {
-            "primary": (ACCENT, BG, ACCENT_DARK, None),
+            "primary": (ACCENT, text_on(ACCENT), ACCENT_DARK, None),
             "dark": (INK, BG, blend(INK, BG, 0.2), None),
             "ghost": (None, INK, SAND, INK),
             "chip": (SAND, INK, BORDER, None),
@@ -2512,7 +2629,7 @@ class ChartLoader:
 class ThemeToggle(tk.Canvas):
     """Round sun / moon button that switches between light and dark mode."""
 
-    def __init__(self, parent, command):
+    def __init__(self, parent, command, tip=None):
         size = S(34)
         super().__init__(parent, width=size, height=size, bg=parent.cget("bg"), highlightthickness=0,
                          bd=0, cursor="hand2")
@@ -2521,7 +2638,7 @@ class ThemeToggle(tk.Canvas):
         self.bind("<Leave>", lambda e: self._set(False))
         self.bind("<ButtonRelease-1>", lambda e: self.command())
         self._draw()
-        Tooltip(self, "Switch to light mode" if THEME == "dark" else "Switch to dark mode")
+        Tooltip(self, tip or ("Switch to light mode" if THEME == "dark" else "Switch to dark mode"))
 
     def _set(self, hover):
         self.hover = hover
@@ -2532,7 +2649,9 @@ class ThemeToggle(tk.Canvas):
         s = int(self["width"])
         ring = SAND if self.hover else self["bg"]
         self.create_oval(1, 1, s - 2, s - 2, fill=ring, outline=FAINT if self.hover else BORDER)
-        c = s / 2
+        self._icon(s, s / 2, ring)
+
+    def _icon(self, s, c, ring):
         if THEME == "dark":   # sun: switch back to light
             r = s * 0.14
             self.create_oval(c - r, c - r, c + r, c + r, fill=INK, outline=INK)
@@ -2546,6 +2665,20 @@ class ThemeToggle(tk.Canvas):
             self.create_oval(c - r, c - r, c + r, c + r, fill=INK, outline=INK)
             off = s * 0.13
             self.create_oval(c - r + off, c - r - off * 0.6, c + r + off, c + r - off * 0.6, fill=ring, outline=ring)
+
+
+class PaletteButton(ThemeToggle):
+    """Round button with three colour dots that opens Colors & appearance."""
+
+    def __init__(self, parent, command):
+        super().__init__(parent, command, tip="Colors & appearance  (Ctrl + ,)")
+
+    def _icon(self, s, c, ring):
+        r, d = s * 0.115, s * 0.16
+        for angle, color in ((-90, ACCENT), (30, UP), (150, INK)):
+            x = c + math.cos(math.radians(angle)) * d
+            y = c + math.sin(math.radians(angle)) * d + s * 0.02
+            self.create_oval(x - r, y - r, x + r, y + r, fill=color, outline=color)
 
 
 KNOWN_NAMES = dict(BIG_STOCKS)
@@ -2799,7 +2932,7 @@ class FeedbackDialog(tk.Toplevel):
         x = app.winfo_rootx() + (app.winfo_width() - w) // 2
         y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
         self.geometry(f"{w}x{self.winfo_reqheight()}+{x}+{y}")
-        set_dark_titlebar(self, THEME == "dark")
+        set_dark_titlebar(self, DARK_UI)
 
 
 class CameraButton(tk.Canvas):
@@ -3086,13 +3219,6 @@ def rating_legend(parent):
     return box
 
 
-def blend(color, other, amount):
-    """Mix two hex colours; amount=0 gives color, 1 gives other."""
-    a = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
-    b = [int(other[i:i + 2], 16) for i in (1, 3, 5)]
-    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
-
-
 def source_badge(parent, src, font="eyebrow", padx=5, pady=1, width=5):
     badge = label(parent, src["short"], font, fg="#FFFFFF", bg=src["color"], padx=S(padx), pady=S(pady),
                   width=width)
@@ -3163,7 +3289,7 @@ class AccessPill(tk.Frame):
 
 def web_badge(parent, name):
     initials = "".join(w[0] for w in re.findall(r"[A-Za-z0-9]+", name)[:3]).upper() or "?"
-    badge = label(parent, initials, "eyebrow", fg="#FFFFFF", bg=FAINT, padx=S(5), pady=S(1), width=5)
+    badge = label(parent, initials, "eyebrow", fg=text_on(FAINT), bg=FAINT, padx=S(5), pady=S(1), width=5)
     badge.keep_bg = True
     return badge
 
@@ -3264,6 +3390,305 @@ class ShortcutsDialog(tk.Toplevel):
         self.focus_set()
 
 
+class AppearanceDialog(tk.Toplevel):
+    """Colors & appearance: light or dark mode, colour themes, colour-blind friendly gains, custom colours."""
+    instance = None
+    MODES = {"Light": "light", "Dark": "dark", "Match Windows": None}
+    UPDOWN = {"Green / red": "classic", "Blue / orange (color-blind friendly)": "colorblind"}
+    CUSTOM = [("ACCENT", "Accent", "Buttons, links and highlights"),
+              ("BG", "Background", "The page behind everything"),
+              ("SURFACE", "Cards", "Boxes and panels that sit on the page"),
+              ("INK", "Text", "Headlines and body text"),
+              ("UP", "Gains", "Prices and values that went up"),
+              ("DOWN", "Losses", "Prices and values that went down")]
+
+    @classmethod
+    def open(cls, app):
+        try:
+            if cls.instance is not None and cls.instance.winfo_exists():
+                cls.instance.lift()
+                cls.instance.focus_set()
+                return
+        except tk.TclError:
+            pass
+        cls.instance = cls(app)
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title("Colors & appearance — Insight by Milton")
+        self.transient(app)
+        self.resizable(False, False)
+
+        # what's saved now; nothing is written back until Apply
+        saved = app.settings.get("appearance")
+        saved = saved if isinstance(saved, dict) else {}
+        custom = saved.get("custom") if isinstance(saved.get("custom"), dict) else {}
+        self.mode = app.settings.get("theme") if app.settings.get("theme") in ("light", "dark") else None
+        self.preset = saved.get("preset") if saved.get("preset") in tuple(COLOR_PRESETS) else "Milton"
+        self.updown = "colorblind" if saved.get("updown") == "colorblind" else "classic"
+        self.custom = {m: {k: v.upper() for k, v in custom[m].items() if k in COLOR_NAMES and is_hex(v)}
+                       if isinstance(custom.get(m), dict) else {} for m in THEMES}
+        self.start = (self.mode, self._appearance())
+
+        # Apply / Cancel sit outside the scrolling part so they are always reachable on small screens
+        footer = tk.Frame(self, bg=BG)
+        footer.pack(fill="x", side="bottom")
+        divider(footer)
+        bar = tk.Frame(footer, bg=BG)
+        bar.pack(fill="x", padx=S(30), pady=S(14))
+        RoundButton(bar, "Apply", self.apply).pack(side="right")
+        RoundButton(bar, "Cancel", self.destroy, kind="ghost").pack(side="right", padx=S(10))
+        reset = label(bar, "Reset to the original look", "small", fg=ACCENT, cursor="hand2")
+        reset.pack(side="left")
+        reset.bind("<Button-1>", lambda e: self.reset_all())
+        self.note = label(bar, "", "small", fg=DOWN, wraplength=S(400), justify="left")
+        self.note.pack(side="left", padx=S(18))
+
+        self.scroller = ScrollFrame(self)
+        self.scroller.pack(fill="both", expand=True)
+        box = tk.Frame(self.scroller.inner, bg=BG)
+        box.pack(fill="both", expand=True, padx=S(30), pady=(S(22), S(12)))
+        label(box, "Colors & appearance", "h2").pack(anchor="w")
+        label(box, "Choose how Insight by Milton looks. Nothing changes until you press Apply.", "small",
+              fg=MUTED).pack(anchor="w", pady=(S(2), 0))
+        columns = tk.Frame(box, bg=BG)
+        columns.pack(anchor="w")
+        left = tk.Frame(columns, bg=BG)
+        left.pack(side="left", anchor="n")
+        right = tk.Frame(columns, bg=BG)
+        right.pack(side="left", anchor="n", padx=(S(28), 0))
+
+        self._heading(left, "MODE")
+        self.mode_chips = ChipGroup(left, list(self.MODES), self._set_mode)
+        self.mode_chips.pack(anchor="w")
+
+        self._heading(left, "COLOR THEME")
+        grid = tk.Frame(left, bg=BG)
+        grid.pack(anchor="w")
+        self.cards = {}
+        for i, name in enumerate(COLOR_PRESETS):
+            canvas = tk.Canvas(grid, width=S(128), height=S(54), bg=BG, highlightthickness=0, cursor="hand2")
+            canvas.grid(row=i // 4, column=i % 4, padx=(0, S(8)), pady=(0, S(8)))
+            canvas.bind("<Button-1>", lambda e, n=name: self._set_preset(n))
+            self.cards[name] = canvas
+
+        self._heading(left, "GAINS AND LOSSES", top=8)
+        self.updown_chips = ChipGroup(left, list(self.UPDOWN), self._set_updown)
+        self.updown_chips.pack(anchor="w")
+
+        self._heading(left, "YOUR OWN COLORS")
+        rows = tk.Frame(left, bg=BG)
+        rows.pack(anchor="w")
+        self.rows = {}
+        for i, (key, title, hint) in enumerate(self.CUSTOM):
+            cell = tk.Frame(rows, bg=BG)
+            cell.grid(row=i // 2, column=i % 2, sticky="w", padx=(0, S(22)), pady=S(4))
+            swatch = tk.Canvas(cell, width=S(26), height=S(26), bg=BG, highlightthickness=0, cursor="hand2")
+            swatch.pack(side="left")
+            name = label(cell, title, "body_semi", width=11, anchor="w")
+            name.pack(side="left", padx=(S(8), 0))
+            entry = tk.Entry(cell, width=9, relief="flat", bd=0, bg=SURFACE, fg=INK, insertbackground=INK,
+                             font=FONTS["small"], justify="center", highlightthickness=1,
+                             highlightbackground=BORDER, highlightcolor=ACCENT)
+            entry.pack(side="left", ipady=S(4))
+            pick = label(cell, "Pick…", "small", fg=ACCENT, cursor="hand2")
+            pick.pack(side="left", padx=(S(8), 0))
+            undo = label(cell, "", "small", fg=FAINT, cursor="hand2", width=5, anchor="w")
+            undo.pack(side="left", padx=(S(8), 0))
+            for widget in (swatch, pick):
+                widget.bind("<Button-1>", lambda e, k=key: self._pick(k))
+            undo.bind("<Button-1>", lambda e, k=key: self._reset_color(k))
+            entry.bind("<KeyRelease>", lambda e, k=key: self._typed(k))
+            entry.bind("<Return>", lambda e, k=key: self._typed(k, final=True))
+            entry.bind("<FocusOut>", lambda e, k=key: self._typed(k, final=True))
+            Tooltip(name, hint)
+            self.rows[key] = (swatch, entry, undo)
+
+        self._heading(right, "PREVIEW")
+        self.preview = tk.Canvas(right, width=S(280), height=S(352), highlightthickness=1, bd=0)
+        self.preview.pack()
+
+        self._refresh()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        inner = self.scroller.inner
+        width, height = inner.winfo_reqwidth(), inner.winfo_reqheight()
+        room = self.winfo_screenheight() - S(120) - footer.winfo_reqheight()
+        if height <= room:
+            self.scroller.bar.pack_forget()
+        else:                                   # short screen: the options scroll, the buttons stay put
+            width, height = width + self.scroller.bar.winfo_reqwidth(), room
+        height += footer.winfo_reqheight()
+        x = app.winfo_rootx() + (app.winfo_width() - width) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - height) // 3
+        y = min(y, self.winfo_screenheight() - height - S(90))
+        self.geometry(f"{width}x{height}+{max(x, 0)}+{max(y, 0)}")
+        set_dark_titlebar(self, DARK_UI)
+        self.focus_set()
+
+    def _heading(self, parent, text, top=16):
+        label(parent, text, "eyebrow", fg=ACCENT).pack(anchor="w", pady=(S(top), S(8)))
+
+    # --- the choices being edited ---------------------------------------------------------
+    def _shown_mode(self):
+        """The mode being edited: the chosen one, or whatever Windows is set to."""
+        return self.mode or ("dark" if windows_prefers_dark() else "light")
+
+    def _appearance(self):
+        data = {"preset": self.preset, "updown": self.updown}
+        custom = {m: dict(colors) for m, colors in self.custom.items() if colors}
+        if custom:
+            data["custom"] = custom
+        return data
+
+    def _palette(self):
+        return build_palette(self._shown_mode(), self._appearance())
+
+    def _set_mode(self, choice):
+        self.mode = self.MODES[choice]
+        self._refresh()
+
+    def _set_preset(self, name):
+        self.preset = name
+        self.custom = {m: {} for m in THEMES}       # picking a theme is a fresh start
+        self._refresh()
+
+    def _set_updown(self, choice):
+        self.updown = self.UPDOWN[choice]
+        for colors in self.custom.values():         # otherwise hand-picked gains/losses would hide the choice
+            colors.pop("UP", None)
+            colors.pop("DOWN", None)
+        self._refresh()
+
+    def _set_color(self, key, value):
+        mode = self._shown_mode()
+        before = dict(self.custom[mode])
+        self.custom[mode][key] = value.upper()
+        palette = self._palette()
+        if palette[key].upper() != value.upper():   # build_palette refused it: the text would be unreadable
+            self.custom[mode] = before
+            self._refresh("That color would make the text too hard to read, so it wasn't changed.")
+            return
+        # drop earlier picks the new colour overrides (e.g. dark text after choosing a dark background)
+        self.custom[mode] = {k: v for k, v in self.custom[mode].items() if palette[k].upper() == v}
+        self._refresh()
+
+    def _pick(self, key):
+        title = next(t for k, t, _ in self.CUSTOM if k == key)
+        chosen = colorchooser.askcolor(color=self._palette()[key], parent=self, title=f"{title} color")[1]
+        if chosen:
+            self._set_color(key, str(chosen))
+
+    def _typed(self, key, final=False):
+        """A hex code typed into a colour box. It applies as soon as it is complete."""
+        try:
+            text = self.rows[key][1].get().strip()
+            text = text if text.startswith("#") else "#" + text
+            if is_hex(text):
+                if text.upper() != self._palette()[key].upper():
+                    self._set_color(key, text)
+                if final:
+                    self.rows[key][1].delete(0, "end")
+                    self.rows[key][1].insert(0, self._palette()[key].upper())
+            elif final:
+                self._refresh("Colors are written like #D47A5D: a # followed by six digits or letters A to F.")
+        except tk.TclError:     # the window closed while a box still had the keyboard
+            pass
+
+    def _reset_color(self, key):
+        self.custom[self._shown_mode()].pop(key, None)
+        self._refresh()
+
+    def reset_all(self):
+        self.preset, self.updown = "Milton", "classic"
+        self.custom = {m: {} for m in THEMES}
+        self._refresh()
+
+    def apply(self):
+        for key in self.rows:       # a code typed but not confirmed with Enter still counts
+            self._typed(key)
+        if (self.mode, self._appearance()) == self.start:
+            self.destroy()
+            return
+        settings = self.app.settings
+        settings.pop("theme", None)     # no saved mode means "match Windows"
+        if self.mode:
+            settings["theme"] = self.mode
+        settings["appearance"] = self._appearance()
+        self.app.restart = True         # the window is rebuilt in the new colours
+        self.app._on_close()
+
+    # --- drawing ------------------------------------------------------------------------------
+    def _refresh(self, note=""):
+        mode, palette = self._shown_mode(), self._palette()
+        self.mode_chips.set(next(n for n, m in self.MODES.items() if m == self.mode))
+        self.updown_chips.set(next(n for n, u in self.UPDOWN.items() if u == self.updown))
+        for name, canvas in self.cards.items():
+            self._draw_card(canvas, name, mode)
+        for key, (swatch, entry, undo) in self.rows.items():
+            swatch.delete("all")
+            round_rect(swatch, 1, 1, S(25), S(25), S(6), fill=palette[key], outline=FAINT)
+            if entry.get().strip().upper().lstrip("#") != palette[key].upper().lstrip("#"):
+                entry.delete(0, "end")
+                entry.insert(0, palette[key].upper())
+            undo.configure(text="Undo" if key in self.custom[mode] else "")
+        self.note.configure(text=note)
+        self._draw_preview(palette)
+
+    def _draw_card(self, canvas, name, mode):
+        p = build_palette(mode, {"preset": name, "updown": self.updown})
+        on = name == self.preset
+        w, h = int(canvas["width"]), int(canvas["height"])
+        canvas.delete("all")
+        round_rect(canvas, 2, 2, w - 3, h - 3, S(10), fill=p["BG"], outline=INK if on else BORDER,
+                   width=S(2) if on else 1)
+        for i, key in enumerate(("ACCENT", "INK", "UP", "DOWN")):
+            x = S(12) + i * S(16)
+            canvas.create_oval(x, S(10), x + S(11), S(21), fill=p[key], outline=p[key])
+        canvas.create_text(S(12), S(37), text=name, font=FONTS["small_semi"], fill=p["INK"], anchor="w")
+        if on:
+            canvas.create_text(w - S(16), S(16), text="✓", font=FONTS["body_semi"], fill=p["ACCENT"])
+
+    def _draw_preview(self, p):
+        """A miniature page drawn in the colours being edited (not the ones the app is using now)."""
+        c = self.preview
+        c.delete("all")
+        c.configure(bg=p["BG"], highlightbackground=p["BORDER"])
+        w, m = int(c["width"]), S(16)
+        c.create_text(m, S(26), text="Insight", font=FONTS["h2"], fill=p["INK"], anchor="w")
+        c.create_text(m + FONTS["h2"].measure("Insight") + S(8), S(28), text="by Milton", font=FONTS["small"],
+                      fill=p["ACCENT"], anchor="w")
+        c.create_line(0, S(50), w + 2, S(50), fill=p["BORDER"])
+        c.create_text(m, S(72), text="EXAMPLE", font=FONTS["eyebrow"], fill=p["ACCENT"], anchor="w")
+        round_rect(c, m, S(88), w - m, S(222), S(10), fill=p["SURFACE"], outline=p["BORDER"])
+        samples = (("A stock that rose", "Secondary text", "+2.14%", "UP", (0.9, 0.6, 0.75, 0.35, 0.5, 0.1)),
+                   ("A stock that fell", "Secondary text", "−1.37%", "DOWN", (0.15, 0.4, 0.3, 0.7, 0.55, 0.9)))
+        for i, (title, sub_text, pct, tone, shape) in enumerate(samples):
+            y = S(112) + i * S(66)
+            c.create_text(m + S(14), y, text=title, font=FONTS["body_semi"], fill=p["INK"], anchor="w")
+            c.create_text(m + S(14), y + S(20), text=sub_text, font=FONTS["small"], fill=p["MUTED"], anchor="w")
+            x1 = w - m - S(14)
+            x0 = x1 - FONTS["small_semi"].measure(pct) - S(16)
+            round_rect(c, x0, y - S(11), x1, y + S(11), S(8), fill=p[tone + "_SOFT"], outline=p[tone + "_SOFT"])
+            c.create_text((x0 + x1) / 2, y, text=pct, font=FONTS["small_semi"], fill=p[tone])
+            points = []
+            for j, level in enumerate(shape):
+                points += [x1 - S(60) + j * S(12), y + S(14) + level * S(16)]
+            c.create_line(*points, fill=p[tone], width=max(1, S(1.6)))
+            if i == 0:
+                c.create_line(m + S(14), y + S(42), w - m - S(14), y + S(42), fill=p["BORDER"])
+        round_rect(c, m, S(236), w - m, S(280), S(10), fill=p["SAND"], outline=p["SAND"])
+        c.create_text(m + S(14), S(258), text="Soft panel", font=FONTS["small_semi"], fill=p["INK"], anchor="w")
+        c.create_text(w - m - S(14), S(258), text="Fine print", font=FONTS["small"], fill=p["FAINT"], anchor="e")
+        bw = FONTS["button"].measure("Subscribe") + S(36)
+        round_rect(c, m, S(298), m + bw, S(334), S(12), fill=p["ACCENT"], outline=p["ACCENT"])
+        c.create_text(m + bw / 2, S(316), text="Subscribe", font=FONTS["button"],
+                      fill=text_on(p["ACCENT"], p["BG"], p["INK"]))
+        c.create_text(m + bw + S(16), S(316), text="A link →", font=FONTS["body_semi"], fill=p["ACCENT"],
+                      anchor="w")
+
+
 class AlertDialog(tk.Toplevel):
     """Set a price alert for one stock."""
     KINDS = {"Rises above": "above", "Falls below": "below", "Moves ±% in a day": "move"}
@@ -3306,7 +3731,7 @@ class AlertDialog(tk.Toplevel):
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2
         y = app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3
         self.geometry(f"+{x}+{y}")
-        set_dark_titlebar(self, THEME == "dark")
+        set_dark_titlebar(self, DARK_UI)
         self.value.focus()
 
     def _kind_changed(self, choice):
@@ -3341,7 +3766,7 @@ class ImportDialog(tk.Toplevel):
         w, h = min(S(820), int(app.winfo_width() * 0.9)), min(S(720), int(app.winfo_height() * 0.9))
         self.geometry(f"{w}x{h}+{app.winfo_rootx() + (app.winfo_width() - w) // 2}"
                       f"+{app.winfo_rooty() + (app.winfo_height() - h) // 3}")
-        set_dark_titlebar(self, THEME == "dark")
+        set_dark_titlebar(self, DARK_UI)
         self.bind("<Escape>", lambda e: self.destroy())
 
         head = tk.Frame(self, bg=BG)
@@ -3489,7 +3914,7 @@ class SellDialog(tk.Toplevel):
         self.update_idletasks()
         self.geometry(f"+{app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2}"
                       f"+{app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3}")
-        set_dark_titlebar(self, THEME == "dark")
+        set_dark_titlebar(self, DARK_UI)
         self.shares.focus()
 
     def _values(self):
@@ -3559,7 +3984,7 @@ class InfoDialog(tk.Toplevel):
         self.update_idletasks()
         self.geometry(f"+{app.winfo_rootx() + (app.winfo_width() - self.winfo_reqwidth()) // 2}"
                       f"+{app.winfo_rooty() + (app.winfo_height() - self.winfo_reqheight()) // 3}")
-        set_dark_titlebar(self, THEME == "dark")
+        set_dark_titlebar(self, DARK_UI)
 
 
 # Plain-English explanations the search bar can open: (term, other words people might type, text, page)
@@ -3669,7 +4094,11 @@ class AppSearch:
         add("ACTIONS", "Price alerts", lambda: (app.navigate("Watchlist"), app.pages["Watchlist"].scroller.canvas.yview_moveto(1)),
             "Set them from a stock's page; see them on Watchlist", "alert notify notification")
         add("ACTIONS", "Switch to light mode" if THEME == "dark" else "Switch to dark mode", app.toggle_theme,
-            "Change the app's colours", "theme dark mode light mode night")
+            "Flip between the light and dark look", "theme dark mode light mode night")
+        add("ACTIONS", "Colors & appearance", lambda: AppearanceDialog.open(app),
+            "Color themes, your own colors, color-blind friendly gains and losses",
+            "theme colour color palette accent background customize customise appearance preset look style "
+            "colorblind colourblind high contrast settings", "Ctrl+,")
         add("ACTIONS", "Send an idea", lambda: FeedbackDialog.open(app), "Suggest a feature or report a bug",
             "feedback suggestion bug contact email")
         add("ACTIONS", "Keyboard shortcuts", lambda: ShortcutsDialog.open(app), "F1", "keys hotkeys", "F1")
@@ -4066,7 +4495,7 @@ class HomePage(Page):
         self.date_label.configure(text=now.strftime("%A, %B %d").replace(" 0", " "))
         self.status_label.configure(text=text)
         self.status_dot.delete("all")
-        self.status_dot.create_oval(1, 1, S(9), S(9), fill=UP if is_open else ACCENT, outline="")
+        self.status_dot.create_oval(1, 1, S(9), S(9), fill=UP if is_open else FAINT, outline="")
 
     # --- snapshot -----------------------------------------------------------
     def _build_snapshot(self, parent):
@@ -4178,7 +4607,7 @@ class HomePage(Page):
             meta.pack(fill="x")
             avatar = tk.Canvas(meta, width=S(26), height=S(26), bg=SURFACE, highlightthickness=0)
             avatar.create_oval(1, 1, S(25), S(25), fill=ACCENT, outline="")
-            avatar.create_text(S(13), S(13), text=(art["author"] or "M")[0].upper(), fill=BG,
+            avatar.create_text(S(13), S(13), text=(art["author"] or "M")[0].upper(), fill=text_on(ACCENT),
                                font=FONTS["small_semi"])
             avatar.pack(side="left", padx=(0, S(8)))
             who = tk.Frame(meta, bg=SURFACE)
@@ -5079,7 +5508,7 @@ class MarketsPage(Page):
                     inner = tk.Frame(soon, bg=ACCENT_SOFT)
                     inner.pack(fill="x", padx=S(12), pady=S(8))
                     rel = "today" if days <= 0 else "tomorrow" if days == 1 else f"in {days} days"
-                    label(inner, f"Earnings call {rel}", "body_semi", fg=ACCENT_DARK if THEME == "light" else ACCENT,
+                    label(inner, f"Earnings call {rel}", "body_semi", fg=ACCENT if DARK_UI else ACCENT_DARK,
                           bg=ACCENT_SOFT).pack(anchor="w")
                     label(inner, when + (f" · {nxt['time']}" if nxt["time"] else ""), "small", fg=INK,
                           bg=ACCENT_SOFT).pack(anchor="w")
@@ -6952,7 +7381,9 @@ class App(tk.Tk, _DropSupport):
         super().__init__()
         SCALE = self.winfo_fpixels("1i") / 96
         self.settings = load_settings()
-        apply_theme(self.settings.get("theme") or ("dark" if windows_prefers_dark() else "light"))
+        mode = self.settings.get("theme")
+        apply_theme(mode if mode in ("light", "dark") else "dark" if windows_prefers_dark() else "light",
+                    self.settings.get("appearance"))
         self.restart = False
         self.suggesters = []
         self.title(APP_NAME)
@@ -6990,6 +7421,7 @@ class App(tk.Tk, _DropSupport):
         self.bind_all("<Escape>", lambda e: self._key(e, self.go_back))
         self.bind_all("<Alt-Left>", lambda e: self._key(e, self.go_back))
         self.bind_all("<F1>", lambda e: ShortcutsDialog.open(self))
+        self.bind_all("<Control-comma>", lambda e: AppearanceDialog.open(self))
         self.bind_all("<F5>", lambda e: self._key(e, self.reload_page))
         self.bind_all("<Control-r>", lambda e: self._key(e, self.reload_page))
         self.bind_all("<Control-s>", lambda e: self._key(e, self.screenshot_page))
@@ -7004,7 +7436,7 @@ class App(tk.Tk, _DropSupport):
         self.bind_all("<Control-k>", lambda e: self._key(e, self.header_search.focus))
         self._enable_drop()
         self.bind("<Configure>", lambda e: e.widget is self and self._close_suggestions())
-        set_dark_titlebar(self, THEME == "dark")
+        set_dark_titlebar(self, DARK_UI)
         self._tick()
 
     # --- window setup -----------------------------------------------------------
@@ -7059,6 +7491,7 @@ class App(tk.Tk, _DropSupport):
         nav = tk.Frame(bar, bg=BG)
         nav.grid(row=0, column=1)
         self.nav_links = {}
+        self._header_parts, self._header_fit = (brand, nav), 0
         for name, _ in self.PAGES:
             link = label(nav, name, "nav", cursor="hand2")
             link.pack(side="left", padx=S(14))
@@ -7071,9 +7504,40 @@ class App(tk.Tk, _DropSupport):
         right.grid(row=0, column=2, sticky="e")
         RoundButton(right, "Subscribe", lambda: open_link(SITE_URL), radius=12).pack(side="right")
         ThemeToggle(right, self.toggle_theme).pack(side="right", padx=(0, S(12)))
-        self.header_search = SearchEntry(right, "Search stocks, pages, help…   Ctrl+K", width=24)
+        PaletteButton(right, lambda: AppearanceDialog.open(self)).pack(side="right", padx=(0, S(8)))
+        self.header_search = SearchEntry(right, self.HEADER_FITS[0][2], width=self.HEADER_FITS[0][1])
         self.header_search.pack(side="right", padx=(0, S(12)))
+        self._header_parts += (right,)
+        bar.bind("<Configure>", lambda e: e.widget is bar and self._fit_header(e.width))
         divider(header)
+
+    # nav-link spacing, search-box width and its hint: roomy first, tighter for narrow windows
+    HEADER_FITS = ((14, 24, "Search stocks, pages, help…   Ctrl+K"), (9, 18, "Search…   Ctrl+K"),
+                   (5, 14, "Search…   Ctrl+K"))
+
+    def _fit_header(self, width):
+        """Tighten the header on narrow windows so the logo and search box are never cut off."""
+        zero = FONTS["body"].measure("0")
+
+        def saved(fit):     # how much narrower this fit is than the roomy one
+            pad, chars, _ = self.HEADER_FITS[fit]
+            return len(self.nav_links) * 2 * (S(14) - S(pad)) + (self.HEADER_FITS[0][1] - chars) * zero
+
+        roomy = sum(part.winfo_reqwidth() for part in self._header_parts) + saved(self._header_fit)
+        fit = next((i for i in range(len(self.HEADER_FITS)) if roomy - saved(i) <= width),
+                   len(self.HEADER_FITS) - 1)
+        if fit == self._header_fit:
+            return
+        self._header_fit = fit
+        pad, chars, hint = self.HEADER_FITS[fit]
+        for link in self.nav_links.values():
+            link.pack_configure(padx=S(pad))
+        search = self.header_search
+        search.entry.configure(width=chars)
+        if search.showing_placeholder:
+            search.entry.delete(0, "end")
+            search.entry.insert(0, hint)
+        search.placeholder = hint
 
     def _build_footer(self):
         # packed before the page body (side="bottom") so it always stays visible
@@ -7322,14 +7786,76 @@ class App(tk.Tk, _DropSupport):
         is_open, text = market_status()
         self.market_label.configure(text=text)
         self.market_dot.delete("all")
-        self.market_dot.create_oval(0, 0, S(7), S(7), fill=UP if is_open else ACCENT, outline="")
+        self.market_dot.create_oval(0, 0, S(7), S(7), fill=UP if is_open else FAINT, outline="")
         if now.second == 0 or not hasattr(self, "_ticked"):
             self._ticked = True
             self.pages["Home"].update_status()
         self.after(1000, self._tick)
 
 
+def uninstall(arguments):
+    """What `insightByMilton.exe --uninstall` does; Windows runs it from Settings > Apps > Installed apps.
+
+    Removes only what the setup program added: its shortcuts, the Apps entry and the program files.
+    The watchlist, portfolio and settings are kept unless the person asks for them to go too.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    from tkinter import messagebox
+    quiet = "--quiet" in arguments
+    folder = os.path.dirname(os.path.abspath(sys.executable))
+    try:
+        with open(os.path.join(folder, "install.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        manifest = None
+    window = tk.Tk()
+    window.withdraw()
+    installed = (getattr(sys, "frozen", False) and isinstance(manifest, dict)
+                 and os.path.normcase(str(manifest.get("folder"))) == os.path.normcase(folder))
+    if not installed:
+        if not quiet:
+            messagebox.showinfo(APP_NAME, "This copy wasn't put here by the setup program, so there is nothing "
+                                          "to uninstall.\n\nTo remove it, just delete its folder.")
+        return 1
+    title = f"Uninstall {APP_NAME}"
+    if not quiet and not messagebox.askyesno(title, f"Remove {APP_NAME} from this computer?"):
+        return 1
+    forget = not quiet and messagebox.askyesno(
+        title, "Also delete your watchlist, portfolio, alerts and settings?\n\n"
+               "Choose No to keep them in case you install the app again.", default="no")
+    for shortcut in manifest.get("shortcuts") or []:
+        if isinstance(shortcut, str) and shortcut.lower().endswith(".lnk") and os.path.isfile(shortcut):
+            try:
+                os.remove(shortcut)
+            except OSError:
+                pass
+    key = manifest.get("registry_key")
+    if isinstance(key, str) and key.rsplit("\\", 1)[-1] == "InsightByMilton":
+        try:
+            import winreg
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
+        except OSError:
+            pass
+    if forget:
+        shutil.rmtree(DATA_DIR, ignore_errors=True)
+    if not quiet:
+        messagebox.showinfo(APP_NAME, f"{APP_NAME} has been removed."
+                            + ("" if forget else "\n\nYour watchlist, portfolio and settings were kept."))
+    # A running program can't delete itself, so a hidden helper removes the program files a moment after this
+    # closes. It deletes only what setup installed, then the folder itself if nothing else is left in it.
+    exe = os.path.join(folder, os.path.basename(sys.executable))
+    clean = (f'rmdir /s /q "{folder}\\_internal" 2>nul & del /f /q "{exe}" "{folder}\\install.json" 2>nul '
+             f'& rmdir "{folder}" 2>nul')
+    subprocess.Popen(f'cmd /d /s /c "for /l %i in (1,1,30) do @if exist "{exe}" (ping -n 2 127.0.0.1 >nul & {clean})"',
+                     cwd=tempfile.gettempdir(), close_fds=True, creationflags=0x08000000 | 0x00000200)
+    return 0
+
+
 def main():
+    if "--uninstall" in sys.argv[1:]:
+        sys.exit(uninstall(sys.argv[1:]))
     if sys.platform == "win32":
         try:  # crisp text on high-DPI screens
             import ctypes

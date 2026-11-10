@@ -1,64 +1,117 @@
-# Windows Installer
+# Windows installer
 
-## Download (no Python required)
+## Install (no Python required)
 
-1. Go to [Releases](../../../releases)
-2. Download `insightByMilton-vXX-windows.zip`
-3. Extract the zip anywhere (keep `insightByMilton.exe` and `_internal/` together)
-4. Double-click `insightByMilton.exe`
+1. Download **[InsightByMilton-Setup.exe](https://github.com/aidanbologna/insight/releases/latest/download/InsightByMilton-Setup.exe)**
+2. Open the downloaded file
+3. Click **Install**
 
-Requires **Windows 10 or 11**. The zip includes every dependency — Python is not needed.
+That's it. The app opens when setup finishes, and afterwards it is in the Start menu and on the desktop.
+
+Requires **Windows 10 or 11**. Everything the app needs is inside the setup file.
+
+### What setup does
+
+Everything is for the signed-in Windows user only, so **no administrator password is needed**.
+
+| | |
+|---|---|
+| Program files | `%LOCALAPPDATA%\Programs\Insight by Milton` (you can choose another folder) |
+| Shortcuts | Start menu, and the desktop if the box is ticked |
+| Uninstall entry | Settings > Apps > Installed apps > Insight by Milton |
+| Your data | `%APPDATA%\InsightByMilton` (watchlist, portfolio, alerts, settings, colors) |
+
+Setup never touches your data folder, so updating keeps everything.
+
+### Update
+
+Download the newest `InsightByMilton-Setup.exe` and run it. It replaces the old version in place.
+Close the app first; setup tells you if it is still open.
+
+### Uninstall
+
+**Settings > Apps > Installed apps > Insight by Milton > Uninstall.**
+It asks whether to also delete your watchlist, portfolio and settings (the default is to keep them).
 
 ---
 
-## Build from source
+## "Windows protected your PC"
 
-### Prerequisites
+The setup file is not code-signed yet, so Windows may warn about it the first time.
 
-- Python 3.10+
-- All dependencies installed: `pip install -r requirements.txt`
-- PyInstaller: `pip install pyinstaller`
+- **Browser:** if the download bar says the file "isn't commonly downloaded", choose **Keep** (Edge: **⋯ > Keep > Show more > Keep anyway**).
+- **Blue SmartScreen box:** click **More info**, then **Run anyway**.
 
-### One-click build
+SmartScreen shows this for every unsigned program until it has been downloaded by enough people.
+Some school-managed computers block unsigned installers completely. In that case use the portable
+copy below, or ask IT to run the silent install.
 
-Double-click **`build.bat`** in the project root.
+---
 
-### Manual command
+## Portable copy (no installing)
+
+1. On the [latest release](https://github.com/aidanbologna/insight/releases/latest), download `insightByMilton-vNN-windows.zip`
+2. Right-click the zip > **Extract All**
+3. Open the extracted folder and double-click **`insightByMilton.exe`**
+
+Keep `insightByMilton.exe` and the `_internal` folder together.
+
+---
+
+## Computer labs: silent install
 
 ```bat
-python -m PyInstaller ^
-    --noconfirm ^
-    --windowed ^
-    --name insightByMilton ^
-    --icon icon.ico ^
-    --add-data "assets;assets" ^
-    --add-data "icon.ico;." ^
-    insightByMilton.py
+InsightByMilton-Setup.exe --silent
 ```
 
-Output: `dist\insightByMilton\insightByMilton.exe`
+| Option | Effect |
+|---|---|
+| `--silent` | Install without showing a window |
+| `--dir "D:\Apps\Insight by Milton"` | Install somewhere else |
+| `--no-desktop` | Skip the desktop shortcut |
 
-Keep `insightByMilton.exe` and `_internal\` in the same folder — the app needs both.
+The install is per-user, so run it as the student's account (for example from a logon script).
+Exit code `0` means success, `2` means the app was open, `1` is any other failure; problems are
+written to `%TEMP%\InsightByMilton-Setup.log`.
+
+Silent uninstall: `"%LOCALAPPDATA%\Programs\Insight by Milton\insightByMilton.exe" --uninstall --quiet`
 
 ---
 
-## Windows SmartScreen warning
+## Build it yourself
 
-When you first run the exe, Windows may show a blue SmartScreen dialog saying
-*"Windows protected your PC"*. This happens because the app isn't code-signed yet.
+```bat
+pip install -r requirements.txt pyinstaller
+python installers\windows\build_installer.py
+```
 
-**To bypass it:**
-1. Click **"More info"** (below the warning text)
-2. Click **"Run anyway"**
+or double-click **`build.bat`** in the project root. The two downloads appear in `release\`:
 
-This is a one-time step per machine. The app is safe — SmartScreen blocks all unsigned
-executables, including clean PyInstaller builds, until they accumulate enough "reputation."
+| File | What it is |
+|---|---|
+| `InsightByMilton-Setup.exe` | The one-file installer |
+| `insightByMilton-vNN-windows.zip` | The portable copy |
+
+Upload both to a GitHub release. Keep the installer's file name exactly as it is: the README's
+download button points at `releases/latest/download/InsightByMilton-Setup.exe`, so it always
+fetches the newest release.
+
+### How it works
+
+| File | Role |
+|---|---|
+| [`build_installer.py`](build_installer.py) | Builds the app with PyInstaller, zips it, then builds the installer around that zip |
+| [`setup_app.py`](setup_app.py) | The setup program itself: a small Tkinter window styled like the app |
+| `insightByMilton.py --uninstall` | The uninstaller lives in the app, so no second program is needed |
+
+The build leaves out libraries the app never uses (`scipy`, `gevent`) and ships a small copy of the
+icon, which makes the download a little over half the size of the v10 zip.
 
 ---
 
 ## Notes
 
-- The app stores its data (watchlist, portfolio, settings, alerts) in `%APPDATA%\InsightByMilton`
-  — this is your personal data folder; it is **not** bundled in the exe and is never shared
-- Windows notifications (`win11toast`) require Windows 10 Build 1903 or later
-- Drag-and-drop CSV import requires `tkinterdnd2` (included in the pre-built installer)
+- Windows notifications (`win11toast`) need Windows 10 build 1903 or later
+- Drag-and-drop CSV import uses `tkinterdnd2` (included)
+- To make the SmartScreen warning go away for everyone, the two `.exe` files would need to be
+  signed with a code-signing certificate
