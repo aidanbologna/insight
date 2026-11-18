@@ -1,0 +1,16 @@
+# Render Blueprint for the web version of Insight by Milton.
+# In Render: New > Blueprint, connect this repository, choose the branch, Deploy Blueprint.
+# The full steps are in web/README.md.
+services:
+  - type: web
+    name: insight-by-milton
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free                      # sleeps after 15 quiet minutes; "starter" stays awake (paid)
+    healthCheckPath: /api/health    # answers without contacting Yahoo
+    # Deploys happen when you press Manual Deploy in Render, not on every push. That keeps a change to
+    # the Windows app from restarting the website (and zeroing the status page). "commit" = on every push.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: INSIGHT_VISITOR_ADDRESS
+        value: forwarded            # visitors arrive through Render's proxy

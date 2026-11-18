@@ -1,0 +1,9 @@
+# Keep the build small: send only what the Dockerfile copies.
+*
+!insight_core.py
+!icon.ico
+!assets/logo.png
+!assets/logo-dark.png
+!web
+web/tests
+**/__pycache__

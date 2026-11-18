@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Insight by Milton</title>
+  <meta name="description" content="Market data, economic signals and clear summaries for the curious reader. A companion to The Milton Review.">
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a class="logo" href="/" aria-label="Insight by Milton, home"></a>
+      <nav class="nav" aria-label="Pages">
+        <a class="nav-link is-current" href="/" aria-current="page">Home</a>
+      </nav>
+      <div class="header-actions">
+        <button class="round-button" id="theme-toggle" type="button" aria-label="Switch between light and dark">
+          <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" fill="currentColor"/>
+          </svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.5" fill="currentColor"/>
+            <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/>
+            </g>
+          </svg>
+        </button>
+        <a class="button" href="https://www.themiltonreview.net" target="_blank" rel="noopener">Subscribe</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div class="hero-text">
+        <h1>Insight<br>by Milton</h1>
+        <p class="lead">Market data, economic signals and clear summaries for the curious reader.
+          A companion to The Milton Review.</p>
+        <p class="hero-buttons">
+          <a class="button button-ghost" href="https://www.themiltonreview.net" target="_blank" rel="noopener">Read The Milton Review</a>
+        </p>
+      </div>
+
+      <aside class="brief" aria-labelledby="brief-title">
+        <p class="eyebrow accent" id="brief-title">Today's brief</p>
+        <h2 class="brief-date" id="brief-date">&nbsp;</h2>
+        <p class="market-status"><span class="dot" id="market-dot"></span><span id="market-text">&nbsp;</span></p>
+        <hr>
+        <p class="brief-text" id="brief-text">Gathering today's numbers…</p>
+      </aside>
+    </section>
+
+    <section aria-labelledby="snapshot-title">
+      <div class="section-header">
+        <h2 class="display" id="snapshot-title">Market Snapshot</h2>
+        <p class="updated" id="updated" role="status" aria-live="polite">Loading…</p>
+      </div>
+      <p class="notice" id="notice" hidden></p>
+      <div class="snapshot-grid" id="snapshot-grid"></div>
+    </section>
+
+    <p class="preview-note">This is an early preview of Insight by Milton on the web. More pages are on the way.
+      The full app is the
+      <a href="https://github.com/aidanbologna/insight/releases/latest" target="_blank" rel="noopener">Windows download</a>.</p>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-row">
+      <span class="market-status"><span class="dot" id="footer-dot"></span><span id="footer-text">&nbsp;</span></span>
+      <span class="footer-note">© <span id="year">2026</span> The Milton Review · Not financial advice · Market data: <span id="source-name">Yahoo Finance</span></span>
+      <a href="/status">Status</a>
+    </div>
+  </footer>
+
+  <script src="/static/home.js"></script>
+</body>
+</html>

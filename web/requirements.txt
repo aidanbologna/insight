@@ -1,0 +1,11 @@
+# What the web server needs. Much shorter than the Windows app's list: no Tkinter, matplotlib or Pillow.
+#   pip install -r web/requirements.txt
+#
+# These are the versions the server was tested with (November 2026), so the host installs the same
+# ones. yfinance is the one most likely to need a newer version, whenever Yahoo changes something:
+# raise its number here, run the tests, and try the pages before deploying.
+fastapi==0.162.4
+uvicorn==0.54.0
+yfinance==1.4.1
+pandas==3.0.3
+tzdata
